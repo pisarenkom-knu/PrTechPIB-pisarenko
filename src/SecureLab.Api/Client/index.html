@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Навчальний трекер інцидентів</title>
   <link rel="stylesheet" href="/styles.css">
-  <script src="/app.js" defer></script>
+  <script src="/app.js?v=severity-summary" defer></script>
 </head>
 <body>
   <header class="page-header">
@@ -38,6 +38,12 @@
         </form>
       </div>
       <ul id="incident-list" class="incident-list"></ul>
+      <div class="toolbar">
+        <h3>Підсумок за severity</h3>
+        <button id="severity-summary-button" type="button">Завантажити</button>
+      </div>
+      <p id="severity-summary-status" class="metadata" role="status"></p>
+      <ul id="severity-summary" class="incident-list"></ul>
     </section>
 
     <section class="panel" aria-labelledby="details-title">

@@ -109,10 +109,12 @@ select {
   width: 100%;
   display: grid;
   gap: 0.35rem;
+  padding: 0.7rem 1rem;
   text-align: left;
   color: #172033;
   background: #f5f8fc;
   border: 1px solid #d8e0ec;
+  border-radius: 0.55rem;
 }
 
 .incident-card:hover,
