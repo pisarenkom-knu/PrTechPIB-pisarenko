@@ -25,6 +25,28 @@ Accept: application/json
 GET {{host}}/api/incidents?status=Unknown
 Accept: application/json
 
-### Lab 1 extension point: expected 501 before student implementation
+### Severity summary contract: GET without a request body returns 200 OK and a JSON array
+### with only severity and count fields. All enum levels are returned in the explicit
+### declared enum order (Low, Medium, High, Critical), including zero-count levels.
 GET {{host}}/api/incidents/severity-summary
+Accept: application/json
+
+### Severity summary with optional status filter (allowlist): Low 0, Medium 1, High 0, Critical 0
+GET {{host}}/api/incidents/severity-summary?status=Triaged
+Accept: application/json
+
+### Severity summary, no incidents match: 200, all counts 0
+GET {{host}}/api/incidents/severity-summary?status=Resolved
+Accept: application/json
+
+### Severity summary, invalid status: expected 400 Validation Problem Details
+GET {{host}}/api/incidents/severity-summary?status=Unknown
+Accept: application/json
+
+### Numeric status is not on the allowlist: expected 400 (before the fix it returned 200)
+GET {{host}}/api/incidents?status=1
+Accept: application/json
+
+### Unknown API route: expected 404 application/problem+json (before the fix: 200 text/html)
+GET {{host}}/api/incidents/abc
 Accept: application/json

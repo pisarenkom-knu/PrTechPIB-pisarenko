@@ -2,6 +2,9 @@ const listElement = document.querySelector("#incident-list");
 const listStatusElement = document.querySelector("#list-status");
 const detailsElement = document.querySelector("#incident-details");
 const filterForm = document.querySelector("#filter-form");
+const severitySummaryButton = document.querySelector("#severity-summary-button");
+const severitySummaryStatus = document.querySelector("#severity-summary-status");
+const severitySummaryElement = document.querySelector("#severity-summary");
 
 async function apiFetch(path, options = {}) {
   const response = await fetch(path, {
@@ -78,6 +81,19 @@ function renderIncidentDetails(incident) {
   detailsElement.replaceChildren(heading, metadata, description, commentsHeading, comments);
 }
 
+function renderSeveritySummary(summary) {
+  severitySummaryElement.replaceChildren();
+  for (const item of summary) {
+    const row = document.createElement("li");
+    row.className = "incident-card";
+    row.append(
+      createTextElement("strong", item.severity),
+      createTextElement("span", String(item.count), "metadata"),
+    );
+    severitySummaryElement.append(row);
+  }
+}
+
 async function loadIncidents() {
   listStatusElement.textContent = "Завантаження…";
   listElement.replaceChildren();
@@ -103,9 +119,29 @@ async function loadIncidentDetails(id) {
   }
 }
 
+async function loadSeveritySummary() {
+  severitySummaryStatus.textContent = "Завантаження…";
+  severitySummaryElement.replaceChildren();
+
+  try {
+    const summary = await apiFetch("/api/incidents/severity-summary");
+    if (summary.length === 0) {
+      severitySummaryStatus.textContent = "Даних немає";
+      return;
+    }
+
+    renderSeveritySummary(summary);
+    severitySummaryStatus.textContent = "Підсумок оновлено.";
+  } catch {
+    severitySummaryStatus.textContent = "Помилка: Не вдалося завантажити підсумок.";
+  }
+}
+
 filterForm.addEventListener("submit", (event) => {
   event.preventDefault();
   loadIncidents();
 });
+
+severitySummaryButton.addEventListener("click", loadSeveritySummary);
 
 loadIncidents();
