@@ -150,3 +150,21 @@ GET {{api}}/api/incidents/search?q=комп'ютерного
 
 ### T-05 до - sortBy поза allowlist
 GET {{api}}/api/incidents/search?sortBy=price
+
+### Буквальний пошук % -> []
+GET {{api}}/api/incidents/search?q=%25
+
+### Буквальний пошук _ -> []
+GET {{api}}/api/incidents/search?q=_
+
+### Буквальний пошук \ -> []
+GET {{api}}/api/incidents/search?q=%5C
+
+### Сортування за замовчуванням -> 0004, 0005, 0003, 0002, 0001
+GET {{api}}/api/incidents/search
+
+### Сортування severity -> 0002 High, 0001 Medium, 0003, 0004, 0005 Low
+GET {{api}}/api/incidents/search?sortBy=severity
+
+### Сортування status -> 0003, 0004, 0005 New, 0001 Triaged, 0002 InProgress
+GET {{api}}/api/incidents/search?sortBy=status
