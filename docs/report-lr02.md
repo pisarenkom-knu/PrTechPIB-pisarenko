@@ -7,8 +7,12 @@
 - Заявлений рівень: відмінний («Відмінно»).
 - Гілка: `lab/2-input-sqli`.
 - Release, base_commit та entry_parent із квитанції `.scaffolds/lab-02.json`: `lab-02-start-v1`, `742beef606974c6f6beb10ae565cdf12ab40111d`, `742beef606974c6f6beb10ae565cdf12ab40111d`.
-- Vulnerable commit: `81fdc80e55339ad201ceb242bf1408ecc4a9c2eb`. Fixed commit коду: `1cb6613d7a7751f33b08baca209ba66f0efc9472`. Фінальний тег `v0.2.0` стоїть на commit із завершеним звітом.
+- Vulnerable commit: `81fdc80e55339ad201ceb242bf1408ecc4a9c2eb`. Fixed commit коду: `1cb6613d7a7751f33b08baca209ba66f0efc9472`. Фінальний тег `v0.2.0` стоїть на commit із завершеним звітом, між fixed commit і тегом код не змінювався.
 - DEL-01: приватний remote `https://github.com/pisarenkom-knu/PrTechPIB-pisarenko.git`, гілка `lab/2-input-sqli` і тег `v0.2.0`.
+
+Тег і перевірка `git diff 1cb6613 HEAD -- src tests`:
+
+![50-tag-v020.png](evidence/lab-02/50-tag-v020.png)
 
 Перевірка SDK і встановлення scaffold:
 
@@ -122,6 +126,7 @@ Scaffold додав два інциденти Low, тому тест підсу�
 
 ![48-fixed-commit.png](evidence/lab-02/48-fixed-commit.png)
 ![49-cp03-security-diff-1.png](evidence/lab-02/49-cp03-security-diff-1.png)
+![49-cp03-security-diff-2.png](evidence/lab-02/49-cp03-security-diff-2.png)
 
 **Залишковий ризик.** Виправлення не замінює автентифікацію й авторизацію, обмеження частоти запитів, пагінацію та перевірку інших endpoint.
 
