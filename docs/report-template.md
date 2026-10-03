@@ -43,90 +43,90 @@ var aggregates = await dbContext.Incidents
 
 Гілка `lab/1-system`, версії інструментів, `.env` в ігнорі:
 
-![cp-01-1.png](evidence/cp-01-1.png)
-![cp-01-2.png](evidence/cp-01-2.png)
-![cp-01-3.png](evidence/cp-01-3.png)
+![cp-01-1.png](evidence/lab-01/cp-01-1.png)
+![cp-01-2.png](evidence/lab-01/cp-01-2.png)
+![cp-01-3.png](evidence/lab-01/cp-01-3.png)
 
 Контейнер PostgreSQL у стані `healthy` і запуск API (`Now listening on: http://localhost:5080`):
 
-![cp-01-4.png](evidence/cp-01-4.png)
-![cp-01-5.png](evidence/cp-01-5.png)
+![cp-01-4.png](evidence/lab-01/cp-01-4.png)
+![cp-01-5.png](evidence/lab-01/cp-01-5.png)
 
 Клієнт, OpenAPI (Scalar) і відновлення seed командою `--reset-database`:
 
-![cp-01-8.png](evidence/cp-01-8.png)
-![cp-01-9.png](evidence/cp-01-9.png)
-![cp-01-10.png](evidence/cp-01-10.png)
+![cp-01-8.png](evidence/lab-01/cp-01-8.png)
+![cp-01-9.png](evidence/lab-01/cp-01-9.png)
+![cp-01-10.png](evidence/lab-01/cp-01-10.png)
 
 ### Дослідження маршруту деталей (CP-02)
 
 Успішний `GET /api/incidents/20000000-0000-0000-0000-000000000003`: метод, URL, `200`, `Content-Type: application/json`, заголовки запиту й відповіді, відсутнє тіло запиту, JSON відповіді та тривалість.
 
-![s22-4-1.png](evidence/s22-4-1.png)
-![s22-4-2.png](evidence/s22-4-2.png)
-![s22-4-3.png](evidence/s22-4-3.png)
-![s22-4-4.png](evidence/s22-4-4.png)
+![s22-4-1.png](evidence/lab-01/s22-4-1.png)
+![s22-4-2.png](evidence/lab-01/s22-4-2.png)
+![s22-4-3.png](evidence/lab-01/s22-4-3.png)
+![s22-4-4.png](evidence/lab-01/s22-4-4.png)
 
 Гілка відсутнього ресурсу (`aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa`): `404`, `application/problem+json` і `traceId` цього запуску.
 
-![s22-5-1.png](evidence/s22-5-1.png)
-![s22-5-2.png](evidence/s22-5-2.png)
+![s22-5-1.png](evidence/lab-01/s22-5-1.png)
+![s22-5-2.png](evidence/lab-01/s22-5-2.png)
 
 Зв'язок із кодом. Спочатку endpoint, де `null` з query стає 404:
 
-![s23-1.png](evidence/s23-1.png)
+![s23-1.png](evidence/lab-01/s23-1.png)
 
 Потім query з `AsNoTracking`, `Where` і `SingleOrDefaultAsync`, а далі `DbSet<Incident> Incidents` та `ToTable("incidents")`:
 
-![s23-2.png](evidence/s23-2.png)
-![s23-3.png](evidence/s23-3.png)
+![s23-2.png](evidence/lab-01/s23-2.png)
+![s23-3.png](evidence/lab-01/s23-3.png)
 
 Read-only SQL-звірка з JSON-відповіддю:
 
-![s24.png](evidence/s24.png)
+![s24.png](evidence/lab-01/s24.png)
 
 Поля `IncidentDetailsResponse` збігаються з проєкцією в query (немає `OwnerUserId`, email і внутрішніх коментарів), а `renderIncidentDetails` записує текст через `textContent` і `createTextNode`, тому `<script>` показується як звичайний текст:
 
-![s25-1.png](evidence/s25-1.png)
-![s25-2.png](evidence/s25-2.png)
+![s25-1.png](evidence/lab-01/s25-1.png)
+![s25-2.png](evidence/lab-01/s25-2.png)
 
 ### Наскрізне розширення summary (CP-03)
 
 Було й стало. До реалізації `GET /api/incidents/severity-summary` повертав `501 Not Implemented`:
 
-![s09-501.png](evidence/s09-501.png)
+![s09-501.png](evidence/lab-01/s09-501.png)
 
 Після реалізації той самий запит дає `200` і повний перелік рівнів у сталому порядку (`Low 1`, `Medium 1`, `High 1`, `Critical 0`):
 
-![cp-03-1.png](evidence/cp-03-1.png)
+![cp-03-1.png](evidence/lab-01/cp-03-1.png)
 
 Окремий response DTO `IncidentSeveritySummaryResponse` містить лише `Severity` і `Count`, без полів сутності:
 
-![cp-03-2.png](evidence/cp-03-2.png)
+![cp-03-2.png](evidence/lab-01/cp-03-2.png)
 
 Асинхронний query: `AsNoTracking()`, необов'язковий `Where` за `status`, `GroupBy(Severity)`, `Count()` і `ToListAsync(cancellationToken)`. Після цього відсутні рівні доповнюються нулями в порядку enum, а в журнал іде кількість груп і фільтр:
 
-![cp-03-3.png](evidence/cp-03-3.png)
+![cp-03-3.png](evidence/lab-01/cp-03-3.png)
 
 Endpoint отримує `IncidentQueries` і `CancellationToken`, перевіряє `status` за allowlist (`TryParseStatus`) і повертає `Results.Ok(...)`. Замість baseline `501` у metadata тепер `Produces<IReadOnlyList<IncidentSeveritySummaryResponse>>()` і `ProducesValidationProblem()`:
 
-![cp-03-5.png](evidence/cp-03-5.png)
+![cp-03-5.png](evidence/lab-01/cp-03-5.png)
 
 Контракт, політика нульових груп і порядок задокументовані в `tests/http/incidents.http`, поруч із запитами для `status=Triaged`, `Resolved`, `Unknown`, `status=1` і невідомого `/api/...`:
 
-![cp-03-4.png](evidence/cp-03-4.png)
+![cp-03-4.png](evidence/lab-01/cp-03-4.png)
 
 Кнопка в клієнті створює `GET /api/incidents/severity-summary` (запис Network) і показує результат:
 
-![cp-03-6.png](evidence/cp-03-6.png)
+![cp-03-6.png](evidence/lab-01/cp-03-6.png)
 
 `renderSeveritySummary` створює вузли через `createElement` і `textContent`, без `innerHTML`:
 
-![cp-03-7.png](evidence/cp-03-7.png)
+![cp-03-7.png](evidence/lab-01/cp-03-7.png)
 
 `loadSeveritySummary` має окремі стани: «Завантаження…», «Даних немає» для порожнього масиву та фіксоване повідомлення про помилку без деталей:
 
-![cp-03-8.png](evidence/cp-03-8.png)
+![cp-03-8.png](evidence/lab-01/cp-03-8.png)
 
 ## 3. Виконані зміни
 
@@ -142,36 +142,36 @@ Endpoint отримує `IncidentQueries` і `CancellationToken`, перевір
 
 | ID   | Передумови                             | Дія                                                                                 | Очікувано                                                                     | Фактично                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Доказ                                                                                                    |
 | ---- | -------------------------------------- | ----------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| T-01 | PostgreSQL healthy, API запущено       | `GET /health`                                                                       | `200 OK`, API з'єднується з БД                                                | Фактично отримано `200 OK`, `Content-Type: application/json`, `{"status":"ready"}`. PostgreSQL має статус `healthy`.                                                                                                                                                                                                                                                                                                                                       | ![cp-01-6.png](evidence/cp-01-6.png) ![cp-01-7.png](evidence/cp-01-7.png)                                |
-| T-02 | Відновлений seed                       | `GET /api/incidents?status=Triaged`                                                 | `200 OK`, список відповідає фільтру                                           | Підтверджено `200`                                                                                                                                                                                                                                                                                                                                                                                                                                         | ![t-02.png](evidence/t-02.png)                                                                           |
-| T-03 | Відновлений seed                       | `GET /api/incidents?status=Resolved`                                                | `200 OK` і `[]`                                                               | Фактично отримано `200 OK`, `Content-Type: application/json`, тіло `[]`.                                                                                                                                                                                                                                                                                                                                                                                   | ![t-03.png](evidence/t-03.png) ![t-03-1.png](evidence/t-03-1.png) ![t-03-2.png](evidence/t-03-2.png)     |
-| T-04 | Відновлений seed                       | `GET /api/incidents/99999999-9999-9999-9999-999999999999`                           | `404` Problem Details                                                         | Фактично отримано `404 Not Found`, `Content-Type: application/problem+json`, `title: Інцидент не знайдено`.                                                                                                                                                                                                                                                                                                                                                | ![t-04.png](evidence/t-04.png) ![s21-2.png](evidence/s21-2.png)                                          |
-| T-05 | Відновлений seed                       | `GET /api/incidents?status=Unknown`                                                 | `400` Validation Problem Details                                              | Фактично отримано `400 Bad Request`, `Content-Type: application/problem+json`, помилка поля `status`.                                                                                                                                                                                                                                                                                                                                                      | ![cp-03-10.png](evidence/cp-03-10.png)                                                                   |
-| T-06 | Реалізований summary, відновлений seed | `GET /api/incidents/severity-summary`                                               | `200`, `Low`, `Medium`, `High` по `1` і `Critical` з `0` у сталому порядку    | Фактично отримано `200 OK`, `application/json`: `Low: 1`, `Medium: 1`, `High: 1`, `Critical: 0`. Порядок відповідає політиці повного переліку.                                                                                                                                                                                                                                                                                                             | ![evidence/cp-03-1.png](evidence/cp-03-1.png)                                                            |
-| T-07 | API і клієнт запущено                  | Натиснути кнопку підсумку                                                           | Network GET і безпечний UI-вивід. Для доброго рівня також loading/empty/error | У коді є окрема async-функція, loading, `summary.length === 0`, фіксована помилка та DOM-вузли через `textContent`.                                                                                                                                                                                                                                                                                                                                        | ![t-07-1.png](evidence/t-07-1.png) ![t-07-2.png](evidence/t-07-2.png) ![t-07-3.png](evidence/t-07-3.png) |
-| T-08 | Після контрольованої зміни даних       | `dotnet run --project src/SecureLab.Api -- --reset-database`, повторити T-02 і T-06 | Seed повертає стенд до відомого стану                                         | Фактично виконано команду `dotnet run --project src/SecureLab.Api -- --reset-database`. У терміналі з’явилося повідомлення: `Локальні навчальні дані очищено та повторно заповнено seed-значеннями.` Після цього повторно перевірено T-02 і T-06: `GET /api/incidents?status=Triaged` і `GET /api/incidents/severity-summary` повернули `200 OK` з відновленим seed-станом, а summary зберіг порядок `Low, Medium, High, Critical` і значення `1, 1, 1, 0` | ![t-08-1.png](evidence/t-08-1.png) ![t-08-2.png](evidence/t-08-2.png)                                    |
+| T-01 | PostgreSQL healthy, API запущено       | `GET /health`                                                                       | `200 OK`, API з'єднується з БД                                                | Фактично отримано `200 OK`, `Content-Type: application/json`, `{"status":"ready"}`. PostgreSQL має статус `healthy`.                                                                                                                                                                                                                                                                                                                                       | ![cp-01-6.png](evidence/lab-01/cp-01-6.png) ![cp-01-7.png](evidence/lab-01/cp-01-7.png)                                |
+| T-02 | Відновлений seed                       | `GET /api/incidents?status=Triaged`                                                 | `200 OK`, список відповідає фільтру                                           | Підтверджено `200`                                                                                                                                                                                                                                                                                                                                                                                                                                         | ![t-02.png](evidence/lab-01/t-02.png)                                                                           |
+| T-03 | Відновлений seed                       | `GET /api/incidents?status=Resolved`                                                | `200 OK` і `[]`                                                               | Фактично отримано `200 OK`, `Content-Type: application/json`, тіло `[]`.                                                                                                                                                                                                                                                                                                                                                                                   | ![t-03.png](evidence/lab-01/t-03.png) ![t-03-1.png](evidence/lab-01/t-03-1.png) ![t-03-2.png](evidence/lab-01/t-03-2.png)     |
+| T-04 | Відновлений seed                       | `GET /api/incidents/99999999-9999-9999-9999-999999999999`                           | `404` Problem Details                                                         | Фактично отримано `404 Not Found`, `Content-Type: application/problem+json`, `title: Інцидент не знайдено`.                                                                                                                                                                                                                                                                                                                                                | ![t-04.png](evidence/lab-01/t-04.png) ![s21-2.png](evidence/lab-01/s21-2.png)                                          |
+| T-05 | Відновлений seed                       | `GET /api/incidents?status=Unknown`                                                 | `400` Validation Problem Details                                              | Фактично отримано `400 Bad Request`, `Content-Type: application/problem+json`, помилка поля `status`.                                                                                                                                                                                                                                                                                                                                                      | ![cp-03-10.png](evidence/lab-01/cp-03-10.png)                                                                   |
+| T-06 | Реалізований summary, відновлений seed | `GET /api/incidents/severity-summary`                                               | `200`, `Low`, `Medium`, `High` по `1` і `Critical` з `0` у сталому порядку    | Фактично отримано `200 OK`, `application/json`: `Low: 1`, `Medium: 1`, `High: 1`, `Critical: 0`. Порядок відповідає політиці повного переліку.                                                                                                                                                                                                                                                                                                             | ![evidence/cp-03-1.png](evidence/lab-01/cp-03-1.png)                                                            |
+| T-07 | API і клієнт запущено                  | Натиснути кнопку підсумку                                                           | Network GET і безпечний UI-вивід. Для доброго рівня також loading/empty/error | У коді є окрема async-функція, loading, `summary.length === 0`, фіксована помилка та DOM-вузли через `textContent`.                                                                                                                                                                                                                                                                                                                                        | ![t-07-1.png](evidence/lab-01/t-07-1.png) ![t-07-2.png](evidence/lab-01/t-07-2.png) ![t-07-3.png](evidence/lab-01/t-07-3.png) |
+| T-08 | Після контрольованої зміни даних       | `dotnet run --project src/SecureLab.Api -- --reset-database`, повторити T-02 і T-06 | Seed повертає стенд до відомого стану                                         | Фактично виконано команду `dotnet run --project src/SecureLab.Api -- --reset-database`. У терміналі з’явилося повідомлення: `Локальні навчальні дані очищено та повторно заповнено seed-значеннями.` Після цього повторно перевірено T-02 і T-06: `GET /api/incidents?status=Triaged` і `GET /api/incidents/severity-summary` повернули `200 OK` з відновленим seed-станом, а summary зберіг порядок `Low, Medium, High, Critical` і значення `1, 1, 1, 0` | ![t-08-1.png](evidence/lab-01/t-08-1.png) ![t-08-2.png](evidence/lab-01/t-08-2.png)                                    |
 
 ### Необов'язковий параметр `status` для summary
 
 `GET /api/incidents/severity-summary?status=Triaged` → `200 OK`, `application/json`:
 `Low: 0`, `Medium: 1`, `High: 0`, `Critical: 0` (Triaged має лише інцидент із severity Medium).
 
-![sum-triaged.png](evidence/sum-triaged.png)
+![sum-triaged.png](evidence/lab-01/sum-triaged.png)
 
 `GET /api/incidents/severity-summary?status=Unknown` → `400 Bad Request`,
 `application/problem+json`, помилка поля `status`, `traceId` цього запуску.
 
-![sum-unknown.png](evidence/sum-unknown.png)
+![sum-unknown.png](evidence/lab-01/sum-unknown.png)
 
 ### Результат автоматизованої перевірки та журнал
 
 Після останньої зміни: `bash scripts/test.sh` - 12 тестів пройдено, 0 провалено.
 
-![final-test-results.png](evidence/final-test-results.png)
+![final-test-results.png](evidence/lab-01/final-test-results.png)
 
 Структурований log summary (`{GroupCount}`, `{Status}`) з `TraceId` у scope, без чутливих даних:
 
-![logs.png](evidence/logs.png)
+![logs.png](evidence/lab-01/logs.png)
 
 ## 5. Security-сценарій
 
@@ -180,16 +180,16 @@ Endpoint отримує `IncidentQueries` і `CancellationToken`, перевір
 перевірку, позитивну регресію та залишковий ризик.
 
 ?status=1 → 200 з Triaged
-![bug-01.png](evidence/bug-01.png)
+![bug-01.png](evidence/lab-01/bug-01.png)
 `Enum.TryParse` приймає рядок `1` як число, а `Enum.IsDefined(1)` теж дає `true`, тож `allowlist` не працює.
 
-![bug-resolved-01.png](evidence/bug-resolved-01.png)
+![bug-resolved-01.png](evidence/lab-01/bug-resolved-01.png)
 
 /api/incidents/abc → HTML
-![bug-02.png](evidence/bug-02.png)
+![bug-02.png](evidence/lab-01/bug-02.png)
 Запит не збігся з жодним маршрутом API, і MapFallbackToFile віддав index.html зі статусом 200.
 
-![bug-resolved-02.png](evidence/bug-resolved-02.png)
+![bug-resolved-02.png](evidence/lab-01/bug-resolved-02.png)
 
 ### Виправлення та повторна перевірка
 
