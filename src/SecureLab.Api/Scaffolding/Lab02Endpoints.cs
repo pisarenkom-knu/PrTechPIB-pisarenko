@@ -123,7 +123,7 @@ public static class Lab02Endpoints
             return Results.Created($"/api/incidents/{incident.Id}", new CreatedIncidentResponse(
                 incident.Id, incident.Title, incident.Severity.ToString(), incident.Status.ToString(),
                 incident.OccurredAtUtc, incident.CreatedAtUtc));
-        });
+        }).RequireAuthorization();
     }
 
     // Для буквального пошуку екрануємо: \, потім _ і %

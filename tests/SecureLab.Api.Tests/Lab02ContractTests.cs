@@ -16,13 +16,19 @@ public sealed class Lab02ContractTests(SecureLabApiFactory factory)
 
     private readonly HttpClient _client = factory.CreateClient();
 
+    // ЛР 03 - POST /api/incidents захищено, тому створення йде від імені Alice
+    private static string StudyPassword =>
+        Environment.GetEnvironmentVariable("SeedUsers__Password")
+        ?? throw new InvalidOperationException("Set local SeedUsers__Password outside Git.");
+
     // T-02 - некоректний DTO дає 400 з ключами полів і без внутрішніх деталей
     [Fact]
     public async Task Post_WithInvalidFields_Returns400WithFieldKeys()
     {
         var body = new { title = "   ", description = "Опис є.", severity = "7" };
+        using var alice = await factory.LoginAsync("alice", StudyPassword);
 
-        using var response = await _client.PostAsJsonAsync("/api/incidents", body);
+        using var response = await alice.PostAsJsonAsync("/api/incidents", body);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Equal("application/problem+json", response.Content.Headers.ContentType?.MediaType);
@@ -49,12 +55,14 @@ public sealed class Lab02ContractTests(SecureLabApiFactory factory)
             occurredAtUtc = DateTimeOffset.UtcNow.AddMinutes(-10)
         };
 
+        using var alice = await factory.LoginAsync("alice", StudyPassword);
+
         try
         {
-            using var first = await _client.PostAsJsonAsync("/api/incidents", body);
+            using var first = await alice.PostAsJsonAsync("/api/incidents", body);
             Assert.Equal(HttpStatusCode.Created, first.StatusCode);
 
-            using var second = await _client.PostAsJsonAsync("/api/incidents", body);
+            using var second = await alice.PostAsJsonAsync("/api/incidents", body);
             Assert.Equal(HttpStatusCode.Conflict, second.StatusCode);
             Assert.Equal("application/problem+json", second.Content.Headers.ContentType?.MediaType);
             var json = await second.Content.ReadAsStringAsync();
@@ -125,9 +133,11 @@ public sealed class Lab02ContractTests(SecureLabApiFactory factory)
             createdAtUtc = new DateTimeOffset(2000, 1, 1, 0, 0, 0, TimeSpan.Zero)
         };
 
+        using var alice = await factory.LoginAsync("alice", StudyPassword);
+
         try
         {
-            using var response = await _client.PostAsJsonAsync("/api/incidents", body);
+            using var response = await alice.PostAsJsonAsync("/api/incidents", body);
             Assert.Equal(HttpStatusCode.Created, response.StatusCode);
             Assert.NotNull(response.Headers.Location);
 

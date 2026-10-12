@@ -6,3 +6,14 @@ GET {{api}}/api/me
 ### Профіль без cookie, з X-Demo-UserId Bob
 GET {{api}}/api/me
 X-Demo-UserId: 10000000-0000-0000-0000-000000000002
+
+### Створення інциденту без входу
+POST {{api}}/api/incidents
+Content-Type: application/json
+
+{
+  "title": "Анонімна спроба",
+  "description": "Запит без cookie.",
+  "severity": "Low",
+  "occurredAtUtc": "2026-10-12T10:00:00Z"
+}
