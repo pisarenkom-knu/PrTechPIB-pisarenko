@@ -1,3 +1,4 @@
+using System.Threading.RateLimiting;
 using SecureLab.Api.Scaffolding;
 using Microsoft.EntityFrameworkCore;
 using Scalar.AspNetCore;
@@ -22,6 +23,33 @@ builder.Services.AddDbContext<SecureLabDbContext>(options =>
 builder.Services.AddScoped<IncidentQueries>();
 
 builder.AddLab03Identity();
+
+// Обмеження спроб входу - ключ за IP, за замовчуванням 5 запитів за 60 секунд
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.OnRejected = (context, _) =>
+    {
+        // Подія без імені користувача, пароля й тіла запиту
+        context.HttpContext.RequestServices.GetRequiredService<ILoggerFactory>()
+            .CreateLogger("SecureLab.AuthEvents")
+            .LogWarning("Auth event {EventType}: result {Result}, trace {TraceId}",
+                "login", "rate-limited", context.HttpContext.TraceIdentifier);
+        return ValueTask.CompletedTask;
+    };
+    options.AddPolicy("login", httpContext =>
+    {
+        var config = httpContext.RequestServices.GetRequiredService<IConfiguration>();
+        return RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = config.GetValue("LoginRateLimit:PermitLimit", 5),
+                Window = TimeSpan.FromSeconds(config.GetValue("LoginRateLimit:WindowSeconds", 60)),
+                QueueLimit = 0
+            });
+    });
+});
 
 var app = builder.Build();
 
@@ -51,6 +79,7 @@ if (app.Environment.IsDevelopment())
 
 app.UseAuthentication();
 app.UseAuthorization();
+app.UseRateLimiter();
 
 app.UseDefaultFiles();
 app.UseStaticFiles();

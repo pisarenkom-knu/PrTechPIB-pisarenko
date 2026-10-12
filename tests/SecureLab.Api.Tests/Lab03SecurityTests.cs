@@ -1,10 +1,12 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using SecureLab.Api.Data;
+using SecureLab.Api.Data.Entities;
 
 namespace SecureLab.Api.Tests;
 
@@ -150,6 +152,112 @@ public sealed class Lab03SecurityTests(SecureLabApiFactory factory)
         Assert.Equal(unknown.StatusCode, wrong.StatusCode);
         Assert.Equal(unknown.Content.Headers.ContentType?.MediaType, wrong.Content.Headers.ContentType?.MediaType);
         Assert.Equal(await StableShapeAsync(unknown), await StableShapeAsync(wrong));
+    }
+
+    // Duplicate - повтор імені або email дає однаковий 409 без уточнення поля
+    [Fact]
+    public async Task Register_Duplicate_Returns409_SameForNameAndEmail()
+    {
+        using var client = factory.CreateClient();
+        var userName = "reg" + Guid.NewGuid().ToString("N")[..8];
+        var password = NewStudyPassword();
+
+        try
+        {
+            using var first = await client.PostAsJsonAsync("/api/auth/register",
+                new { userName, email = $"{userName}@example.test", displayName = "Студент 01", password });
+            Assert.Equal(HttpStatusCode.Created, first.StatusCode);
+            using var created = JsonDocument.Parse(await first.Content.ReadAsStringAsync());
+            foreach (var forbidden in new[] { "password", "passwordHash", "securityStamp", "role" })
+                Assert.False(created.RootElement.TryGetProperty(forbidden, out _), $"Поле {forbidden} не має бути у відповіді");
+
+            // Те саме ім'я з іншим email
+            using var sameName = await client.PostAsJsonAsync("/api/auth/register",
+                new { userName, email = $"other-{userName}@example.test", displayName = "Студент 01", password });
+            // Інше ім'я з тим самим email
+            using var sameEmail = await client.PostAsJsonAsync("/api/auth/register",
+                new { userName = "x" + userName, email = $"{userName}@example.test", displayName = "Студент 01", password });
+
+            Assert.Equal(HttpStatusCode.Conflict, sameName.StatusCode);
+            Assert.Equal(HttpStatusCode.Conflict, sameEmail.StatusCode);
+            Assert.Equal("application/problem+json", sameName.Content.Headers.ContentType?.MediaType);
+            Assert.Equal(await StableShapeAsync(sameName), await StableShapeAsync(sameEmail));
+        }
+        finally
+        {
+            await DeleteUserAsync(userName);
+        }
+    }
+
+    // Зайві role та id у register нічого не змінюють - роль і Id призначає сервер
+    [Fact]
+    public async Task Register_WithServerManagedFields_IgnoresThem()
+    {
+        using var client = factory.CreateClient();
+        var userName = "reg" + Guid.NewGuid().ToString("N")[..8];
+        var password = NewStudyPassword();
+        var forgedId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+
+        try
+        {
+            using var response = await client.PostAsJsonAsync("/api/auth/register", new
+            {
+                userName, email = $"{userName}@example.test", displayName = "Студент 01", password,
+                role = "Administrator", id = forgedId
+            });
+            Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+
+            using var user = await factory.LoginAsync(userName, password);
+            using var me = await user.GetAsync("/api/me");
+            using var document = JsonDocument.Parse(await me.Content.ReadAsStringAsync());
+            Assert.Equal("Reporter", document.RootElement.GetProperty("role").GetString());
+            Assert.NotEqual(forgedId, document.RootElement.GetProperty("userId").GetGuid());
+        }
+        finally
+        {
+            await DeleteUserAsync(userName);
+        }
+    }
+
+    // Cookie flags - через HTTPS cookie має httponly, secure, samesite=lax і не має строку зберігання
+    [Fact]
+    public async Task Login_OverHttps_SetsExpectedCookieFlags()
+    {
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            BaseAddress = new Uri("https://localhost"), AllowAutoRedirect = false
+        });
+
+        using var response = await client.PostAsJsonAsync("/api/auth/login",
+            new { userName = "alice", password = StudyPassword });
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        const string cookieName = ".AspNetCore.Identity.Application=";
+        var matching = response.Headers.GetValues("Set-Cookie")
+            .Where(value => value.StartsWith(cookieName, StringComparison.Ordinal)).ToArray();
+        // Перевірка лише кількості - значення cookie не потрапить у failure
+        Assert.True(matching.Length == 1);
+        // Перша частина «назва=значення» відкидається і не друкується
+        var attributes = matching[0].Split(';').Skip(1)
+            .Select(part => part.Trim().ToLowerInvariant()).ToArray();
+        Assert.Contains("httponly", attributes);
+        Assert.Contains("secure", attributes);
+        Assert.Contains("samesite=lax", attributes);
+        Assert.Contains("path=/", attributes);
+        Assert.DoesNotContain(attributes, part => part.StartsWith("expires=", StringComparison.Ordinal));
+        Assert.DoesNotContain(attributes, part => part.StartsWith("max-age=", StringComparison.Ordinal));
+    }
+
+    // Одноразовий пароль за політикою Identity, ніде не друкується
+    private static string NewStudyPassword() => "Aa1-" + Guid.NewGuid().ToString("N");
+
+    private async Task DeleteUserAsync(string userName)
+    {
+        await using var scope = factory.Services.CreateAsyncScope();
+        var users = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
+        var user = await users.FindByNameAsync(userName);
+        if (user is not null)
+            await users.DeleteAsync(user);
     }
 
     private static NewIncidentBody NewIncident(string prefix) => new(

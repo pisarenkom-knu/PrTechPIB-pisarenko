@@ -105,17 +105,36 @@ public static class Lab03Identity
             // Відповідь лише з дозволених полів - без пароля, hash, stamp і ролі
             return Results.Created("/api/me", new RegistrationResponse(user.Id, userName, user.DisplayName));
         });
-        app.MapPost("/api/auth/login", async (LoginInput input, SignInManager<ApplicationUser> signIn) =>
+        app.MapPost("/api/auth/login", async (LoginInput input, SignInManager<ApplicationUser> signIn,
+            HttpContext httpContext, ILoggerFactory loggerFactory) =>
         {
+            var events = loggerFactory.CreateLogger("SecureLab.AuthEvents");
             if (string.IsNullOrWhiteSpace(input.UserName) || string.IsNullOrEmpty(input.Password))
+            {
+                LogLoginFailure(events, httpContext);
                 return Results.Unauthorized();
+            }
             var result = await signIn.PasswordSignInAsync(input.UserName, input.Password, false, false);
-            return result.Succeeded ? Results.NoContent() : Results.Unauthorized();
-        });
+            if (!result.Succeeded)
+            {
+                LogLoginFailure(events, httpContext);
+                return Results.Unauthorized();
+            }
+            // Успіх - лише id користувача, без імені з форми й пароля
+            var user = await signIn.UserManager.FindByNameAsync(input.UserName);
+            events.LogInformation("Auth event {EventType}: result {Result}, user {UserId}, trace {TraceId}",
+                "login", "success", user?.Id, httpContext.TraceIdentifier);
+            return Results.NoContent();
+        }).RequireRateLimiting("login");
         // Стандартний sign-out Identity - сервер наказує браузеру видалити cookie
-        app.MapPost("/api/auth/logout", async (SignInManager<ApplicationUser> signIn) =>
+        app.MapPost("/api/auth/logout", async (SignInManager<ApplicationUser> signIn,
+            HttpContext httpContext, ILoggerFactory loggerFactory) =>
         {
+            var userId = httpContext.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
             await signIn.SignOutAsync();
+            loggerFactory.CreateLogger("SecureLab.AuthEvents")
+                .LogInformation("Auth event {EventType}: result {Result}, user {UserId}, trace {TraceId}",
+                    "logout", "success", userId ?? "anonymous", httpContext.TraceIdentifier);
             return Results.NoContent();
         });
         // Профіль лише з verified principal, X-Demo-UserId більше не читається
@@ -123,6 +142,11 @@ public static class Lab03Identity
         // Приклад лише mechanics: не повертає identity і не реалізує оцінювану operation.
         app.MapGet("/api/auth/session-check", () => Results.NoContent()).RequireAuthorization();
     }
+
+    // Невдалий вхід - без введеного імені, бо туди помилково вводять пароль
+    private static void LogLoginFailure(ILogger events, HttpContext httpContext) =>
+        events.LogWarning("Auth event {EventType}: result {Result}, trace {TraceId}",
+            "login", "failure", httpContext.TraceIdentifier);
 
     private static IResult GetCurrentUser(HttpContext httpContext)
     {
