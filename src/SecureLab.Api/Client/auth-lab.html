@@ -1,7 +1,21 @@
 <!doctype html>
 <html lang="uk"><meta charset="utf-8"><title>ЛР 03 — сеанс</title>
 <h1>Навчальний сеанс</h1>
+<p>Стан: <strong id="state">перевірка…</strong></p>
+<h2>Реєстрація</h2>
+<form id="register"><label>Ім’я <input name="userName" autocomplete="username" required></label>
+<label>Email <input name="email" type="email" autocomplete="email" required></label>
+<label>Відображуване ім’я <input name="displayName" maxlength="120" required></label>
+<label>Пароль <input name="password" type="password" autocomplete="new-password" required></label><button>Зареєструватися</button></form>
+<h2>Вхід</h2>
 <form id="login"><label>Ім’я <input name="userName" autocomplete="username" required></label>
 <label>Пароль <input name="password" type="password" autocomplete="current-password" required></label><button>Увійти</button></form>
-<button id="me">Мій профіль</button><button id="logout">Вийти</button><pre id="result"></pre>
+<button id="me">Мій профіль</button><button id="logout">Вийти</button>
+<dl id="profile" hidden><dt>Id</dt><dd id="profile-id"></dd><dt>Ім’я користувача</dt><dd id="profile-name"></dd><dt>Роль</dt><dd id="profile-role"></dd></dl>
+<h2>Новий інцидент</h2>
+<form id="create"><label>Назва <input name="title" maxlength="160" required></label>
+<label>Опис <textarea name="description" maxlength="4000" required></textarea></label>
+<label>Severity <select name="severity"><option>Low</option><option>Medium</option><option>High</option><option>Critical</option></select></label>
+<label>Час події <input name="occurredAt" type="datetime-local" required></label><button>Створити</button></form>
+<pre id="result"></pre>
 <script src="auth-lab.js" defer></script></html>
