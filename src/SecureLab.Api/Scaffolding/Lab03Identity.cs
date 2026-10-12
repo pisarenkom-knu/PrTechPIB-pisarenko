@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using Microsoft.AspNetCore.Identity;
 using SecureLab.Api.Data;
 using SecureLab.Api.Data.Entities;
@@ -111,20 +112,33 @@ public static class Lab03Identity
             var result = await signIn.PasswordSignInAsync(input.UserName, input.Password, false, false);
             return result.Succeeded ? Results.NoContent() : Results.Unauthorized();
         });
-        app.MapPost("/api/auth/logout", () => Results.StatusCode(StatusCodes.Status501NotImplemented));
-        // Навмисно хибна навчальна довіра: ЛР 03 замінює заявлений id на verified principal.
-        app.MapGet("/api/me", async (HttpContext context, SecureLabDbContext db) =>
+        // Стандартний sign-out Identity - сервер наказує браузеру видалити cookie
+        app.MapPost("/api/auth/logout", async (SignInManager<ApplicationUser> signIn) =>
         {
-            if (!Guid.TryParse(context.Request.Headers["X-Demo-UserId"], out var claimedId))
-                return Results.StatusCode(StatusCodes.Status501NotImplemented);
-            var user = await db.Users.FindAsync(claimedId);
-            return user is null ? Results.NotFound() : Results.Ok(new { user.Id, user.UserName, user.DisplayName });
+            await signIn.SignOutAsync();
+            return Results.NoContent();
         });
+        // Профіль лише з verified principal, X-Demo-UserId більше не читається
+        app.MapGet("/api/me", GetCurrentUser).RequireAuthorization();
         // Приклад лише mechanics: не повертає identity і не реалізує оцінювану operation.
         app.MapGet("/api/auth/session-check", () => Results.NoContent()).RequireAuthorization();
+    }
+
+    private static IResult GetCurrentUser(HttpContext httpContext)
+    {
+        // Id з claim NameIdentifier, який сервер сам поклав у зашифровану cookie
+        var userId = httpContext.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (!Guid.TryParse(userId, out var verifiedUserId))
+            return Results.Problem(statusCode: StatusCodes.Status500InternalServerError);
+
+        var userName = httpContext.User.FindFirst(ClaimTypes.Name)?.Value ?? "";
+        var role = httpContext.User.FindFirst(ClaimTypes.Role)?.Value ?? "";
+
+        return Results.Ok(new CurrentUserResponse(verifiedUserId, userName, role));
     }
 }
 
 public sealed record RegistrationInput(string? UserName, string? Email, string? DisplayName, string? Password);
 public sealed record RegistrationResponse(Guid Id, string UserName, string DisplayName);
 public sealed record LoginInput(string? UserName, string? Password);
+public sealed record CurrentUserResponse(Guid UserId, string UserName, string Role);
