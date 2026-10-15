@@ -1,0 +1,109 @@
+@host = http://localhost:5080
+@aliceId = 20000000-0000-0000-0000-000000000001
+@bobId = 20000000-0000-0000-0000-000000000002
+@aliceNewId = 20000000-0000-0000-0000-000000000003
+@bobSearchId = 20000000-0000-0000-0000-000000000004
+@aliceSearchId = 20000000-0000-0000-0000-000000000005
+@bobCommentId = 30000000-0000-0000-0000-000000000002
+@internalCommentId = 30000000-0000-0000-0000-000000000003
+
+# Пароль лише з середовища процесу VS Code, cookie зберігає REST Client
+
+### 1. Анонім - деталі інциденту Alice
+GET {{host}}/api/incidents/{{aliceId}}
+Accept: application/json
+
+### 2. Анонім - пошук
+GET {{host}}/api/incidents/search?q=O'Brien
+Accept: application/json
+
+### 3. Вхід Alice
+POST {{host}}/api/auth/login
+Content-Type: application/json
+
+{ "userName": "alice", "password": "{{$processEnv SeedUsers__Password}}" }
+
+### 4. Alice - власні деталі
+GET {{host}}/api/incidents/{{aliceId}}
+Accept: application/json
+
+### 5. Alice - деталі Bob з тією самою cookie
+GET {{host}}/api/incidents/{{bobId}}
+Accept: application/json
+
+### 6. Alice - неіснуючий id
+GET {{host}}/api/incidents/20000000-0000-0000-0000-000000000099
+Accept: application/json
+
+### 7. Alice - список
+GET {{host}}/api/incidents
+Accept: application/json
+
+### 8. Alice - пошук запису Bob (A-11)
+GET {{host}}/api/incidents/search?q=O'Brien
+Accept: application/json
+
+### 9. Alice - зведення severity (A-11)
+GET {{host}}/api/incidents/severity-summary
+Accept: application/json
+
+### 10. Alice - коментар до інциденту Bob за прямим id
+GET {{host}}/api/incident-comments/{{bobCommentId}}
+Accept: application/json
+
+### 11. Alice - internal comment до власного інциденту
+GET {{host}}/api/incident-comments/{{internalCommentId}}
+Accept: application/json
+
+### 12. Alice - зміна інциденту Bob
+PUT {{host}}/api/incidents/{{bobId}}
+Content-Type: application/json
+
+{ "title": "Змінено Alice", "description": "Опис інциденту Bob замінено чужим користувачем." }
+
+### 13. Alice - стан інциденту Bob після зміни
+GET {{host}}/api/incidents/{{bobId}}
+Accept: application/json
+
+### 14. Alice - overposting status і ownerUserId у власному update
+PUT {{host}}/api/incidents/{{aliceSearchId}}
+Content-Type: application/json
+
+{ "title": "Власний запис Alice", "description": "Звичайне редагування власного інциденту.", "status": "Closed", "ownerUserId": "10000000-0000-0000-0000-000000000002" }
+
+### 15. Alice - стан власного інциденту після overposting
+GET {{host}}/api/incidents/{{aliceSearchId}}
+Accept: application/json
+
+### 16. Alice (Reporter) - triage власного New
+POST {{host}}/api/incidents/{{aliceNewId}}/triage
+
+### 17. Alice - статус після triage
+GET {{host}}/api/incidents/{{aliceNewId}}
+Accept: application/json
+
+### 18. Alice - видалення інциденту Bob
+DELETE {{host}}/api/incidents/{{bobSearchId}}
+
+### 19. Вхід Bob
+POST {{host}}/api/auth/login
+Content-Type: application/json
+
+{ "userName": "bob", "password": "{{$processEnv SeedUsers__Password}}" }
+
+### 20. Bob - власний інцидент після дій Alice
+GET {{host}}/api/incidents/{{bobSearchId}}
+Accept: application/json
+
+### 21. Вхід Morgan
+POST {{host}}/api/auth/login
+Content-Type: application/json
+
+{ "userName": "morgan", "password": "{{$processEnv SeedUsers__Password}}" }
+
+### 22. Morgan (Analyst) - деталі інциденту Alice (A-03R)
+GET {{host}}/api/incidents/{{aliceId}}
+Accept: application/json
+
+### 23. Вихід
+POST {{host}}/api/auth/logout

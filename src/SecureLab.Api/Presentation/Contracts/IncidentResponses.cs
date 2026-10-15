@@ -28,3 +28,9 @@ public sealed record IncidentCommentResponse(
 public sealed record IncidentSeveritySummaryResponse(
     string Severity,
     int Count);
+
+// ЛР 4 vulnerable - універсальний DTO приймає також status
+public sealed record UpdateIncidentRequest(
+    string? Title,
+    string? Description,
+    string? Status);
