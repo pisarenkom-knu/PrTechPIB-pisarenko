@@ -1,4 +1,7 @@
+using System.Diagnostics;
 using System.Security.Claims;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization.Infrastructure;
 using Microsoft.EntityFrameworkCore;
 using SecureLab.Api.Application.Incidents;
 using SecureLab.Api.Data;
@@ -11,8 +14,10 @@ public static class IncidentEndpoints
 {
     public static IEndpointRouteBuilder MapIncidentEndpoints(this IEndpointRouteBuilder endpoints)
     {
+        // ЛР 4 - уся група лише для автентифікованого principal, анонім одержує 401
         var group = endpoints.MapGroup("/api/incidents")
-            .WithTags("Incidents");
+            .WithTags("Incidents")
+            .RequireAuthorization();
 
         group.MapGet("/", GetListAsync)
             .WithName("GetIncidents")
@@ -29,18 +34,15 @@ public static class IncidentEndpoints
             .Produces<IReadOnlyList<IncidentSeveritySummaryResponse>>()
             .ProducesValidationProblem();
 
-        // ЛР 4 vulnerable - лише автентифікація, рішення для ресурсу відсутнє
+        // ЛР 4 - рішення для ресурсу приймає IncidentAuthorizationHandler усередині endpoint
         group.MapPut("/{id:guid}", UpdateAsync)
-            .WithName("UpdateIncident")
-            .RequireAuthorization();
+            .WithName("UpdateIncident");
 
         group.MapDelete("/{id:guid}", DeleteAsync)
-            .WithName("DeleteIncident")
-            .RequireAuthorization();
+            .WithName("DeleteIncident");
 
         group.MapPost("/{id:guid}/triage", TriageAsync)
-            .WithName("TriageIncident")
-            .RequireAuthorization();
+            .WithName("TriageIncident");
 
         endpoints.MapGet("/api/incident-comments/{id:guid}", GetCommentAsync)
             .WithTags("Incidents")
@@ -50,10 +52,12 @@ public static class IncidentEndpoints
         return endpoints;
     }
 
-    // ЛР 4 vulnerable - пошук лише за id, status із body записується в entity
+    // ЛР 4 - content update лише власником, DTO містить тільки title і description
     private static async Task<IResult> UpdateAsync(
         Guid id,
         UpdateIncidentRequest request,
+        HttpContext httpContext,
+        IAuthorizationService authorizationService,
         SecureLabDbContext dbContext,
         CancellationToken cancellationToken)
     {
@@ -69,54 +73,68 @@ public static class IncidentEndpoints
         if (errors.Count > 0)
             return Results.ValidationProblem(errors);
 
+        // Tracked entity без AsNoTracking, інакше SaveChanges нічого не запише
         var incident = await dbContext.Incidents
             .SingleOrDefaultAsync(item => item.Id == id, cancellationToken);
-        if (incident is null)
-            return IncidentNotFound();
+        var denied = await AuthorizeAsync(
+            httpContext.User, incident, IncidentOperations.Update, authorizationService);
+        if (denied is not null)
+            return denied;
 
-        incident.Title = request.Title!.Trim();
+        // Зміна стану лише після дозволу
+        incident!.Title = request.Title!.Trim();
         incident.Description = request.Description!.Trim();
-        if (request.Status is not null && TryParseStatus(request.Status, out var status))
-            incident.Status = status;
         incident.UpdatedAtUtc = DateTimeOffset.UtcNow;
         await dbContext.SaveChangesAsync(cancellationToken);
         return Results.NoContent();
     }
 
-    // ЛР 4 vulnerable - видалення будь-якого інциденту за id
+    // ЛР 4 - видалення лише власником і лише поки статус New
     private static async Task<IResult> DeleteAsync(
         Guid id,
+        HttpContext httpContext,
+        IAuthorizationService authorizationService,
         SecureLabDbContext dbContext,
         CancellationToken cancellationToken)
     {
         var incident = await dbContext.Incidents
             .SingleOrDefaultAsync(item => item.Id == id, cancellationToken);
-        if (incident is null)
-            return IncidentNotFound();
+        var denied = await AuthorizeAsync(
+            httpContext.User, incident, IncidentOperations.Delete, authorizationService);
+        if (denied is not null)
+            return denied;
 
-        dbContext.Incidents.Remove(incident);
+        dbContext.Incidents.Remove(incident!);
         await dbContext.SaveChangesAsync(cancellationToken);
         return Results.NoContent();
     }
 
-    // ЛР 4 vulnerable - transition без перевірки ролі Analyst
+    // ЛР 4 - privileged transition лише для Analyst, відмова записується в audit
     private static async Task<IResult> TriageAsync(
         Guid id,
         HttpContext httpContext,
+        IAuthorizationService authorizationService,
+        ILoggerFactory loggerFactory,
         SecureLabDbContext dbContext,
         CancellationToken cancellationToken)
     {
-        var userIdValue = httpContext.User.FindFirstValue(ClaimTypes.NameIdentifier);
-        if (!Guid.TryParse(userIdValue, out var userId))
+        if (!IncidentAccess.TryGetUserId(httpContext.User, out var userId))
             return Results.Challenge();
 
         var incident = await dbContext.Incidents
             .SingleOrDefaultAsync(item => item.Id == id, cancellationToken);
-        if (incident is null)
-            return IncidentNotFound();
+        var denied = await AuthorizeAsync(
+            httpContext.User, incident, IncidentOperations.Triage, authorizationService);
+        if (denied is not null)
+        {
+            // Рішення ухвалено всередині endpoint, тому подію можна записати
+            if (incident is not null)
+                LogAuthorizationDenied(loggerFactory, httpContext, userId, "incident.triage", incident.Id);
+            return denied;
+        }
 
         // Наступний статус визначає сервер, допустимий лише New -> Triaged
-        if (incident.Status != IncidentStatus.New)
+        if (incident!.Status != IncidentStatus.New)
             return Results.Problem(
                 title: "Перехід неможливий",
                 detail: "Triage дозволено лише для інциденту зі статусом New.",
@@ -139,23 +157,70 @@ public static class IncidentEndpoints
         return Results.NoContent();
     }
 
-    // ЛР 4 vulnerable - коментар за прямим id без перевірки parent і IsInternal
+    // ЛР 4 - child через parent, те саме рішення Read і правило internal comment
     private static async Task<IResult> GetCommentAsync(
         Guid id,
+        HttpContext httpContext,
+        IAuthorizationService authorizationService,
         SecureLabDbContext dbContext,
         CancellationToken cancellationToken)
     {
         var comment = await dbContext.IncidentComments
             .AsNoTracking()
-            .Where(item => item.Id == id)
-            .Select(item => new IncidentCommentResponse(
-                item.Id,
-                item.Author.DisplayName,
-                item.Text,
-                item.CreatedAtUtc))
-            .SingleOrDefaultAsync(cancellationToken);
-        return comment is null ? IncidentNotFound() : Results.Ok(comment);
+            .Include(item => item.Incident)
+            .Include(item => item.Author)
+            .SingleOrDefaultAsync(item => item.Id == id, cancellationToken);
+        if (comment is null)
+            return IncidentNotFound();
+
+        var canRead = await authorizationService.AuthorizeAsync(
+            httpContext.User, comment.Incident, IncidentOperations.Read);
+        if (!canRead.Succeeded)
+            return IncidentNotFound();
+
+        // Internal comment для Reporter так само невидимий, як неіснуючий
+        if (comment.IsInternal)
+        {
+            var canReadInternal = await authorizationService.AuthorizeAsync(
+                httpContext.User, comment.Incident, IncidentOperations.ReadInternalComments);
+            if (!canReadInternal.Succeeded)
+                return IncidentNotFound();
+        }
+
+        return Results.Ok(new IncidentCommentResponse(
+            comment.Id, comment.Author.DisplayName, comment.Text, comment.CreatedAtUtc));
     }
+
+    // Порядок для mutation - невідомий або невидимий ресурс 404, видимий без права на дію 403
+    private static async Task<IResult?> AuthorizeAsync(
+        ClaimsPrincipal user,
+        Incident? incident,
+        OperationAuthorizationRequirement operation,
+        IAuthorizationService authorizationService)
+    {
+        if (incident is null)
+            return IncidentNotFound();
+
+        var canRead = await authorizationService.AuthorizeAsync(user, incident, IncidentOperations.Read);
+        if (!canRead.Succeeded)
+            return IncidentNotFound();
+
+        var canAct = await authorizationService.AuthorizeAsync(user, incident, operation);
+        return canAct.Succeeded ? null : Results.Forbid();
+    }
+
+    // Audit без cookie, пароля і body, trace id той самий, що у traceId відповіді
+    private static void LogAuthorizationDenied(
+        ILoggerFactory loggerFactory, HttpContext httpContext, Guid subjectId, string action, Guid resourceId) =>
+        loggerFactory.CreateLogger("SecureLab.AuthorizationAudit").LogWarning(
+            "authorization.denied subject={SubjectId} action={Action} resource={ResourceId} "
+            + "result={Result} occurredAtUtc={OccurredAtUtc:O} traceId={TraceId}",
+            subjectId,
+            action,
+            resourceId,
+            "denied",
+            DateTimeOffset.UtcNow,
+            Activity.Current?.Id ?? httpContext.TraceIdentifier);
 
     private static IResult IncidentNotFound() => Results.Problem(
         title: "Інцидент не знайдено",
@@ -163,6 +228,7 @@ public static class IncidentEndpoints
 
     private static async Task<IResult> GetListAsync(
         string? status,
+        HttpContext httpContext,
         IncidentQueries queries,
         CancellationToken cancellationToken)
     {
@@ -177,25 +243,41 @@ public static class IncidentEndpoints
             parsedStatus = candidate;
         }
 
-        return Results.Ok(await queries.GetListAsync(parsedStatus, cancellationToken));
+        // Id і роль лише з principal
+        if (!IncidentAccess.TryGetUserId(httpContext.User, out var userId))
+            return Results.Challenge();
+        var isAnalyst = httpContext.User.IsInRole(DbSeeder.AnalystRole);
+
+        return Results.Ok(await queries.GetListAsync(parsedStatus, userId, isAnalyst, cancellationToken));
     }
 
     private static async Task<IResult> GetDetailsAsync(
         Guid id,
+        HttpContext httpContext,
+        IAuthorizationService authorizationService,
         IncidentQueries queries,
         CancellationToken cancellationToken)
     {
-        var incident = await queries.GetDetailsAsync(id, cancellationToken);
-        return incident is null
-            ? Results.Problem(
-                title: "Інцидент не знайдено",
-                detail: $"Інцидент '{id}' не існує.",
-                statusCode: StatusCodes.Status404NotFound)
-            : Results.Ok(incident);
+        // ЛР 4 - спершу entity для рішення, DTO формується лише після дозволу
+        var entity = await queries.FindForAuthorizationAsync(id, cancellationToken);
+        if (entity is null)
+            return IncidentNotFound();
+
+        var canRead = await authorizationService.AuthorizeAsync(
+            httpContext.User, entity, IncidentOperations.Read);
+        if (!canRead.Succeeded)
+            return IncidentNotFound();
+
+        // Internal comment бачить лише роль, якій це дозволяє handler
+        var canReadInternal = await authorizationService.AuthorizeAsync(
+            httpContext.User, entity, IncidentOperations.ReadInternalComments);
+        var incident = await queries.GetDetailsAsync(id, canReadInternal.Succeeded, cancellationToken);
+        return incident is null ? IncidentNotFound() : Results.Ok(incident);
     }
 
     private static async Task<IResult> GetSeveritySummaryAsync(
         string? status,
+        HttpContext httpContext,
         IncidentQueries queries,
         CancellationToken cancellationToken)
     {
@@ -210,7 +292,11 @@ public static class IncidentEndpoints
             parsedStatus = candidate;
         }
 
-        return Results.Ok(await queries.GetSeveritySummaryAsync(parsedStatus, cancellationToken));
+        if (!IncidentAccess.TryGetUserId(httpContext.User, out var userId))
+            return Results.Challenge();
+        var isAnalyst = httpContext.User.IsInRole(DbSeeder.AnalystRole);
+
+        return Results.Ok(await queries.GetSeveritySummaryAsync(parsedStatus, userId, isAnalyst, cancellationToken));
     }
 
     private static bool TryParseStatus(string raw, out IncidentStatus status)

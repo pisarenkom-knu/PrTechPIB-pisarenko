@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using Microsoft.EntityFrameworkCore;
+using SecureLab.Api.Application.Incidents;
 using SecureLab.Api.Data;
 using SecureLab.Api.Data.Entities;
 
@@ -10,11 +11,17 @@ public static class Lab02Endpoints
 {
     public static void MapLab02Endpoints(this WebApplication app)
     {
-        app.MapGet("/api/incidents/search", async (string? q, string? sortBy, SecureLabDbContext db, CancellationToken ct) =>
+        app.MapGet("/api/incidents/search", async (string? q, string? sortBy, HttpContext httpContext, SecureLabDbContext db, CancellationToken ct) =>
         {
+            // ЛР 4 A-11 - id і роль з principal, обмеження до сортування й Take(50)
+            if (!IncidentAccess.TryGetUserId(httpContext.User, out var userId))
+                return Results.Challenge();
+            var isAnalyst = httpContext.User.IsInRole(DbSeeder.AnalystRole);
+
             // Значення q потрапляє в SQL лише параметром
             var pattern = "%" + EscapeLike(q ?? "") + "%";
             var found = db.Incidents.AsNoTracking()
+                .VisibleTo(userId, isAnalyst)
                 .Where(item => EF.Functions.ILike(item.Title, pattern, "\\") || EF.Functions.ILike(item.Description, pattern, "\\"));
 
             // Allowlist sortBy - клієнт лише обирає один із трьох варіантів switch
@@ -47,7 +54,7 @@ public static class Lab02Endpoints
                     row.Severity.ToString(), row.Status.ToString(), row.CreatedAtUtc))
                 .ToListAsync(ct);
             return Results.Ok(rows);
-        });
+        }).RequireAuthorization();
         app.MapPost("/api/incidents", async (CreateIncidentRequest request, HttpContext httpContext, SecureLabDbContext db, CancellationToken ct) =>
         {
             // Власник лише з verified principal, ownerUserId із JSON у DTO немає

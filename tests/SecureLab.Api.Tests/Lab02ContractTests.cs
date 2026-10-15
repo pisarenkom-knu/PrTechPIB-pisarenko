@@ -14,8 +14,6 @@ public sealed class Lab02ContractTests(SecureLabApiFactory factory)
 {
     private static readonly Guid UsbIncidentId = Guid.Parse("20000000-0000-0000-0000-000000000005");
 
-    private readonly HttpClient _client = factory.CreateClient();
-
     // ЛР 03 - POST /api/incidents захищено, тому створення йде від імені Alice
     private static string StudyPassword =>
         Environment.GetEnvironmentVariable("SeedUsers__Password")
@@ -107,7 +105,8 @@ public sealed class Lab02ContractTests(SecureLabApiFactory factory)
     [Fact]
     public async Task Search_WithUnknownSortBy_Returns400()
     {
-        using var response = await _client.GetAsync("/api/incidents/search?sortBy=price");
+        using var morgan = await factory.LoginAsync("morgan", StudyPassword);
+        using var response = await morgan.GetAsync("/api/incidents/search?sortBy=price");
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var json = await response.Content.ReadAsStringAsync();
@@ -141,7 +140,7 @@ public sealed class Lab02ContractTests(SecureLabApiFactory factory)
             Assert.Equal(HttpStatusCode.Created, response.StatusCode);
             Assert.NotNull(response.Headers.Location);
 
-            var details = await _client.GetFromJsonAsync<IncidentDetailsResponse>(
+            var details = await alice.GetFromJsonAsync<IncidentDetailsResponse>(
                 response.Headers.Location);
             Assert.NotNull(details);
             Assert.NotEqual(forgedId, details.Id);
@@ -155,9 +154,11 @@ public sealed class Lab02ContractTests(SecureLabApiFactory factory)
         }
     }
 
+    // ЛР 4 - пошук вимагає login, Analyst бачить усі записи, тож очікування S-02 і T-04 ті самі
     private async Task<List<IncidentSearchItemResponse>> SearchAsync(string q)
     {
-        var items = await _client.GetFromJsonAsync<List<IncidentSearchItemResponse>>(
+        using var morgan = await factory.LoginAsync("morgan", StudyPassword);
+        var items = await morgan.GetFromJsonAsync<List<IncidentSearchItemResponse>>(
             "/api/incidents/search?q=" + Uri.EscapeDataString(q));
         Assert.NotNull(items);
         return items;
