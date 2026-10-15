@@ -1,19 +1,37 @@
 # Звіт ЛР04
 
 ## Контекст і межа виконання
+
 - Рівень: відмінний («Відмінно»). Виконано весь добрий рівень (list, update, delete, triage, child, audit, A-01...A-12) і додатково окремий resource-based handler та A-11 для search і severity-summary.
 - Baseline 2-A, гілка `lab/4-authorization` від тегу `v0.3.0` (commit `846edac`). Перший commit гілки `8c74e39` додає до seed internal comment `30000000-0000-0000-0000-000000000003` (IsInternal = true, інцидент Alice, автор Morgan).
 - Головна action - details `GET /api/incidents/{id}`. Політика для чужого ресурсу - 404, однаковий із неіснуючим id. Маршрути: list, details, search, severity-summary, update `PUT /api/incidents/{id}`, delete `DELETE /api/incidents/{id}`, triage `POST /api/incidents/{id}/triage`, child `GET /api/incident-comments/{id}`.
 - ЛР 3 після тегу не виправлялась, стартові перевірки пройдено (рис. 1-12).
 
-Рівні накопичувальні; заповніть свій і всі нижчі. Рядки/розділи вищого рівня позначте «не виконувалось — рівень …». Критерії й маршрут — на початку практичної частини методички.
-
 ## Матриця і server-side рішення
-Посилання на docs/access-matrix.md; конкретні правила ролей/owner/context.
-Місця query scoping, handler, policy, дозволених DTO і server-managed fields.
+
+Повна матриця й обґрунтування політики відмов - `docs/access-matrix.md`. Коротко:
+
+- Reporter (і Administrator, бо предметне правило 2-A не публікує для нього прав над інцидентами) - лише власні інциденти: читання, content update, видалення поки статус New.
+- Analyst - читання всіх інцидентів разом з internal comment і лише один змінювальний дозвіл New -> Triaged.
+- Чужий для principal інцидент - 404, однаковий із неіснуючим. Видимий інцидент без права на дію - 403. Triage не зі статусу New - 409.
+
+Де правило реалізовано в коді:
+
+| Місце                                                                            | Що робить                                                                                                                                                                           |
+| -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Application/Incidents/IncidentAuthorization.cs`, `IncidentAuthorizationHandler` | рішення для завантаженого `Incident`: id і роль з principal, owner і status зі збереженого ресурсу, операції Read, Update, Delete, Triage, ReadInternalComments                     |
+| там само, `IncidentAccess.VisibleTo`                                             | правило видимості для множин (`isAnalyst \|\| OwnerUserId == userId`) як умова SQL-запиту                                                                                           |
+| `Program.cs`                                                                     | реєстрація handler як `IAuthorizationHandler`                                                                                                                                       |
+| `Presentation/Endpoints/IncidentEndpoints.cs`                                    | `RequireAuthorization()` на групі, helper `AuthorizeAsync` (404 для невидимого, 403 для забороненої дії), `IncidentNotFound()` як єдина відповідь 404, audit `authorization.denied` |
+| `Application/Incidents/IncidentQueries.cs`                                       | `VisibleTo` у list і severity-summary до `GroupBy`, `FindForAuthorizationAsync` (entity лише для рішення), `includeInternal` у details-проєкції                                     |
+| `Scaffolding/Lab02Endpoints.cs`                                                  | `RequireAuthorization()` і `VisibleTo` у search до сортування й `Take![50-retest-overposting.png](evidence/lab-04/50-retest-overposting.png)`                                       |
+| `Presentation/Contracts/IncidentResponses.cs`                                    | `UpdateIncidentRequest` містить лише `Title` і `Description`                                                                                                                        |
+
+Server-managed поля (`Id`, `OwnerUserId`, `Status`, `CreatedAtUtc`, `UpdatedAtUtc`) визначає тільки сервер. Owner при створенні береться з principal (успадковано з ЛР 3), статус змінює лише triage після перевірки поточного стану.
 
 ## Вразливий стан і PoC
-Vulnerable commit hash вписується наступним commit.
+
+Vulnerable commit - `bbc0ad7`.
 
 У стані після ЛР 3 details, list, search і severity-summary не мали жодної перевірки, навіть автентифікації. Для доброго рівня створено update, delete, triage і child endpoint у найпростішому вигляді: вони вимагають лише login (`RequireAuthorization()`), завантажують ресурс тільки за id, а універсальний `UpdateIncidentRequest` містить поле `Status`. Це контрольований локальний вразливий стан на синтетичних даних.
 
@@ -21,84 +39,151 @@ Vulnerable commit hash вписується наступним commit.
 
 **Таблиця 1.** Спостереження у вразливому стані
 
-| № | Суб'єкт | Дія | Очікувано за матрицею | Фактично | Рисунок |
-|---|---|---|---|---|---|
-| 1 | анонім | GET details Alice | 401 | 200, повні дані | 14 |
-| 2 | анонім | GET search `O'Brien` | 401 | 200, запис Bob `...0004` | 15 |
-| 3 | Alice | helper `--user alice --incident bob` | 404 | login 204, read 200, дані Bob | 13 |
-| 4 | Alice | GET details власного `...0001` | 200 | 200 | 17 |
-| 5 | Alice | GET details Bob `...0002` | 404 | 200, «Невідома спроба входу», «Боб Мельник» | 18 |
-| 6 | Alice | GET неіснуючий `...0099` | 404 | 404 з detail «Інцидент '...0099' не існує» | 19 |
-| 7 | Alice | GET list | лише 1, 3, 5 | також `...0002` і `...0004` Bob | 20 |
-| 8 | Alice | GET search `O'Brien` | порожньо | запис Bob `...0004` | 21 |
-| 9 | Alice | GET severity-summary | Medium 1, Low 2 | Low 3, Medium 1, High 1 (рахує Bob) | 22 |
-| 10 | Alice | GET коментар Bob `30...0002` | 404 | 200, текст коментаря | 23 |
-| 11 | Alice | GET internal comment `30...0003` | 404 | 200, «Внутрішня примітка аналітика...» | 24 |
-| 12 | Alice | PUT інцидент Bob `...0002` | 404, стан без змін | 204, title Bob став «Змінено Alice» | 25, 26 |
-| 13 | Alice | PUT власний `...0005` з `"status": "Closed"`, `"ownerUserId"` Bob | 204, статус New без змін | 204, статус Closed (owner лишився Alice) | 27, 28 |
-| 14 | Alice (Reporter) | POST triage власного `...0003` | 403, статус New | 204, статус Triaged | 29, 30 |
-| 15 | Alice | DELETE інцидент Bob `...0004` | 404, запис існує | 204, Bob одержує 404 на власний запис | 31, 32, 33 |
-| 16 | Morgan (Analyst) | GET details Alice | 200 | 200 | 34, 35 |
+| №   | Суб'єкт          | Дія                                                               | Очікувано за матрицею    | Фактично                                    | Рисунок                                                                                                                                                                                                     |
+| --- | ---------------- | ----------------------------------------------------------------- | ------------------------ | ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | анонім           | GET details Alice                                                 | 401                      | 200, повні дані                             | ![14-poc-anon-details.png](evidence/lab-04/14-poc-anon-details.png)                                                                                                                                         |
+| 2   | анонім           | GET search `O'Brien`                                              | 401                      | 200, запис Bob `...0004`                    | ![15-poc-anon-search.png](evidence/lab-04/15-poc-anon-search.png)                                                                                                                                           |
+| 3   | Alice            | helper `--user alice --incident bob`                              | 404                      | login 204, read 200, дані Bob               | ![13-poc-helper-idor.png](evidence/lab-04/13-poc-helper-idor.png)                                                                                                                                           |
+| 4   | Alice            | GET details власного `...0001`                                    | 200                      | 200                                         | ![17-poc-alice-own.png](evidence/lab-04/17-poc-alice-own.png)                                                                                                                                               |
+| 5   | Alice            | GET details Bob `...0002`                                         | 404                      | 200, «Невідома спроба входу», «Боб Мельник» | ![18-poc-alice-bob-idor.png](evidence/lab-04/18-poc-alice-bob-idor.png)                                                                                                                                     |
+| 6   | Alice            | GET неіснуючий `...0099`                                          | 404                      | 404 з detail «Інцидент '...0099' не існує»  | ![19-poc-unknown-id.png](evidence/lab-04/19-poc-unknown-id.png)                                                                                                                                             |
+| 7   | Alice            | GET list                                                          | лише 1, 3, 5             | також `...0002` і `...0004` Bob             | ![20-poc-list-all.png](evidence/lab-04/20-poc-list-all.png)                                                                                                                                                 |
+| 8   | Alice            | GET search `O'Brien`                                              | порожньо                 | запис Bob `...0004`                         | ![21-poc-search-a11.png](evidence/lab-04/21-poc-search-a11.png)                                                                                                                                             |
+| 9   | Alice            | GET severity-summary                                              | Medium 1, Low 2          | Low 3, Medium 1, High 1 (рахує Bob)         | ![22-poc-summary-a11.png](evidence/lab-04/22-poc-summary-a11.png)                                                                                                                                           |
+| 10  | Alice            | GET коментар Bob `30...0002`                                      | 404                      | 200, текст коментаря                        | ![23-poc-child-bob-comment.png](evidence/lab-04/23-poc-child-bob-comment.png)                                                                                                                               |
+| 11  | Alice            | GET internal comment `30...0003`                                  | 404                      | 200, «Внутрішня примітка аналітика...»      | ![24-poc-internal-comment.png](evidence/lab-04/24-poc-internal-comment.png)                                                                                                                                 |
+| 12  | Alice            | PUT інцидент Bob `...0002`                                        | 404, стан без змін       | 204, title Bob став «Змінено Alice»         | ![25-poc-update-bob.png](evidence/lab-04/25-poc-update-bob.png), ![26-poc-update-bob-after.png](evidence/lab-04/26-poc-update-bob-after.png)                                                                |
+| 13  | Alice            | PUT власний `...0005` з `"status": "Closed"`, `"ownerUserId"` Bob | 204, статус New без змін | 204, статус Closed (owner лишився Alice)    | ![27-poc-overposting.png](evidence/lab-04/27-poc-overposting.png), ![28-poc-overposting-after.png](evidence/lab-04/28-poc-overposting-after.png)                                                            |
+| 14  | Alice (Reporter) | POST triage власного `...0003`                                    | 403, статус New          | 204, статус Triaged                         | ![29-poc-triage-reporter.png](evidence/lab-04/29-poc-triage-reporter.png), ![30-poc-triage-after.png](evidence/lab-04/30-poc-triage-after.png)                                                              |
+| 15  | Alice            | DELETE інцидент Bob `...0004`                                     | 404, запис існує         | 204, Bob одержує 404 на власний запис       | ![31-poc-delete-bob.png](evidence/lab-04/31-poc-delete-bob.png), ![32-poc-login-bob.png](evidence/lab-04/32-poc-login-bob.png), ![33-poc-bob-after-delete.png](evidence/lab-04/33-poc-bob-after-delete.png) |
+| 16  | Morgan (Analyst) | GET details Alice                                                 | 200                      | 200                                         | ![34-poc-login-morgan.png](evidence/lab-04/34-poc-login-morgan.png), ![35-poc-morgan-read.png](evidence/lab-04/35-poc-morgan-read.png)                                                                      |
 
-Першопричина. Кожен шлях даних шукає `Incident` або `IncidentComment` лише за id (`.Where(incident => incident.Id == id)`, `SingleOrDefaultAsync(item => item.Id == id)`) і не порівнює `OwnerUserId` з `NameIdentifier` principal. Рішення суб'єкт + дія + ресурс + контекст відсутнє в будь-якій формі (ні обмеження запиту, ні handler). Triage не перевіряє роль Analyst, update приймає захищений `status` з body, child-запит не перевіряє parent incident і `IsInternal`. Search і severity-summary з ЛР 1-2 рахують усі рядки таблиці. Ідентифікатор у URL сам по собі нормальний, дефект у відсутності серверного рішення після нього.
+Першопричина. Кожен шлях даних шукає `Incident` або `IncidentComment` лише за id (`.Where(incident => incident.Id == id)`, `SingleOrDefaultAsync(item => item.Id == id)`) і не порівнює `OwnerUserId` з `NameIdentifier` principal.
+
+Рішення суб'єкт + дія + ресурс + контекст відсутнє в будь-якій формі (ні обмеження запиту, ні handler). Triage не перевіряє роль Analyst, update приймає захищений `status` з body, child-запит не перевіряє parent incident і `IsInternal`. Search і severity-summary з ЛР 1-2 рахують усі рядки таблиці. Ідентифікатор у URL сам по собі нормальний, дефект у відсутності серверного рішення після нього.
 
 ## Виправлення та retest
-Fixed commit hash; ті самі запити до/після; результати потрібних A-сценаріїв.
-Для mutation: стан до/після дозволу та стан без змін після deny.
-Для read: DTO не розкриває чужі дані/внутрішні owner fields.
-Узгодженість 404 для чужого/невідомого — для всіх реалізованих маршрутів; окремий доказ A-10 — з доброго рівня за політики 404.
 
-Як читати докази в таблиці: **mutation perimeter** — усі змінювальні дії (update/delete/transition); **state assertion** — повторне читання й порівняння стану до/після; **contract test** — запит із зайвим полем для обраного A-08a/A-08b. Для audit знайдіть `authorization.denied` у виводі API й збережіть рядок без пароля, cookie, token і повного body. Дозволена привілейована дія потребує ролі й контексту за матрицею (для triage — `Analyst` і `New`).
+Vulnerable commit - `bbc0ad7`. Fixed commit - `2c3f7bb` (hash вписано наступним commit, тег `v0.4.0` указує на fixed commit).
+
+Після виправлення виконано reset, усі 54 автоматичні тести пройшли (рис. 36), API перезапущено, і повторено запити `tests/http/lab-04-access.http` та helper.
+
+**Таблиця 2.** Запити до і після виправлення
+
+| №   | Суб'єкт          | Дія                                   | До (рисунок)                                                                                                                                                        | Після (рисунок)                                                                                                                                                                                                                                          |
+| --- | ---------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | анонім           | GET details Alice                     | 200 ![14-poc-anon-details.png](evidence/lab-04/14-poc-anon-details.png)                                                                                             | 401 Problem Details ![38-retest-anon-details.png](evidence/lab-04/38-retest-anon-details.png)                                                                                                                                                            |
+| 2   | анонім           | GET search                            | 200 ![15-poc-anon-search.png](evidence/lab-04/15-poc-anon-search.png)                                                                                               | 401 ![39-retest-anon-search.png](evidence/lab-04/39-retest-anon-search.png)                                                                                                                                                                              |
+| 3   | Alice            | helper Alice -> Bob                   | read 200, дані Bob ![13-poc-helper-idor.png](evidence/lab-04/13-poc-helper-idor.png)                                                                                | read 404 «Інцидент не знайдено» ![37-retest-helper.png](evidence/lab-04/37-retest-helper.png)                                                                                                                                                            |
+| 4   | Alice            | GET власний `...0001`                 | 200 ![17-poc-alice-own.png](evidence/lab-04/17-poc-alice-own.png)                                                                                                   | 200, без internal comment `30...0003` ![41-retest-alice-own.png](evidence/lab-04/41-retest-alice-own.png)                                                                                                                                                |
+| 5   | Alice            | GET Bob `...0002`                     | 200, дані Bob ![18-poc-alice-bob-idor.png](evidence/lab-04/18-poc-alice-bob-idor.png)                                                                               | 404 без detail ![42-retest-alice-bob-404.png](evidence/lab-04/42-retest-alice-bob-404.png)                                                                                                                                                               |
+| 6   | Alice            | GET неіснуючий `...0099`              | 404 з detail та id ![19-poc-unknown-id.png](evidence/lab-04/19-poc-unknown-id.png)                                                                                  | 404, тіло як у № 5, відрізняється лише `traceId` ![43-retest-unknown-404.png](evidence/lab-04/43-retest-unknown-404.png)                                                                                                                                 |
+| 7   | Alice            | GET list                              | 5 записів, з Bob ![20-poc-list-all.png](evidence/lab-04/20-poc-list-all.png)                                                                                        | лише `...0005`, `...0003`, `...0001`, у SQL `WHERE owner_user_id = @userId` ![44-retest-list-own.png](evidence/lab-04/44-retest-list-own.png)                                                                                                            |
+| 8   | Alice            | GET search `O'Brien`                  | запис Bob ![21-poc-search-a11.png](evidence/lab-04/21-poc-search-a11.png)                                                                                           | `[]`, у SQL умова власника до `LIMIT` ![45-retest-search-a11.png](evidence/lab-04/45-retest-search-a11.png)                                                                                                                                              |
+| 9   | Alice            | GET severity-summary                  | Low 3, Medium 1, High 1 ![22-poc-summary-a11.png](evidence/lab-04/22-poc-summary-a11.png)                                                                           | Low 2, Medium 1, High 0, Critical 0, умова до `GROUP BY` ![46-retest-summary-a11.png](evidence/lab-04/46-retest-summary-a11.png)                                                                                                                         |
+| 10  | Alice            | GET коментар Bob `30...0002`          | 200 ![23-poc-child-bob-comment.png](evidence/lab-04/23-poc-child-bob-comment.png)                                                                                   | 404 ![47-retest-child-bob-comment.png](evidence/lab-04/47-retest-child-bob-comment.png)                                                                                                                                                                  |
+| 11  | Alice            | GET internal `30...0003`              | 200, внутрішній текст ![24-poc-internal-comment.png](evidence/lab-04/24-poc-internal-comment.png)                                                                   | 404 ![48-retest-internal-comment.png](evidence/lab-04/48-retest-internal-comment.png)                                                                                                                                                                    |
+| 12  | Alice            | PUT Bob `...0002`                     | 204, дані змінено ![25-poc-update-bob.png](evidence/lab-04/25-poc-update-bob.png), ![26-poc-update-bob-after.png](evidence/lab-04/26-poc-update-bob-after.png)      | 404, стан не змінено тест A-04, ![49-retest-update-bob-404.png](evidence/lab-04/49-retest-update-bob-404.png)                                                                                                                                            |
+| 13  | Alice            | PUT власний з `status`, `ownerUserId` | 204, статус Closed ![27-poc-overposting.png](evidence/lab-04/27-poc-overposting.png), ![28-poc-overposting-after.png](evidence/lab-04/28-poc-overposting-after.png) | 204, змінено лише title і description, статус New, власник Alice ![50-retest-overposting.png](evidence/lab-04/50-retest-overposting.png), ![51-retest-overposting-after.png](evidence/lab-04/51-retest-overposting-after.png)                            |
+| 14  | Alice (Reporter) | POST triage `...0003`                 | 204, Triaged ![29-poc-triage-reporter.png](evidence/lab-04/29-poc-triage-reporter.png), ![30-poc-triage-after.png](evidence/lab-04/30-poc-triage-after.png)         | 403 і audit-подія, статус New ![52-retest-triage-403-audit.png](evidence/lab-04/52-retest-triage-403-audit.png), ![53-retest-triage-after.png](evidence/lab-04/53-retest-triage-after.png)                                                               |
+| 15  | Alice            | DELETE Bob `...0004`                  | 204, запис зник ![31-poc-delete-bob.png](evidence/lab-04/31-poc-delete-bob.png), ![33-poc-bob-after-delete.png](evidence/lab-04/33-poc-bob-after-delete.png)        | 404 ![54-retest-delete-bob-404.png](evidence/lab-04/54-retest-delete-bob-404.png), Bob читає свій запис - 200 ![55-retest-login-bob.png](evidence/lab-04/55-retest-login-bob.png), ![56-retest-bob-intact.png](evidence/lab-04/56-retest-bob-intact.png) |
+| 16  | Morgan (Analyst) | GET details Alice                     | 200 ![35-poc-morgan-read.png](evidence/lab-04/35-poc-morgan-read.png)                                                                                               | 200, з internal comment `30...0003` ![57-retest-login-morgan.png](evidence/lab-04/57-retest-login-morgan.png), ![58-retest-morgan-read.png](evidence/lab-04/58-retest-morgan-read.png)                                                                   |
+
+Для mutation відмова перевірена разом зі станом: після відмови в № 12 і № 15 власник Bob одержує незмінений ресурс (рис. 56 і тест `A04_UpdateAndDelete_AsNonOwner_ReturnNotFound_AndDoNotChangeResource`), після відмови в № 14 статус лишився New (рис. 53). Для read відповідь 404 не містить ні даних Bob, ні його id (рис. 42, тест A-03). Details DTO не містить `OwnerUserId` (тест `GetDetails_DoesNotExposeInternalOwnerFields`).
 
 ## Доказова таблиця
-Якщо головна action — mutation, доказ owner/non-owner для details запишіть у стовпці «Доказ» рядка A-03R.
 
-Усі рівні: автоматичні HTTP A-02/A-03, A-03R — test або `.http`. Добрий додає A-01, A-04–A-07, одне з A-08a/A-08b, A-09, A-12; A-10 лише для 404. A-06 і A-07 автоматичні. Відмінний додає A-11 (search і severity-summary); A-06/A-08a/b успадковано. Запишіть фактичні результати; рядки вищого рівня позначте з поясненням.
+| ID    | Рівень               | Сценарій                                    | Передумови                                             | Дія                                                                  | Очікувано                                         | Фактично                                                                                                                                             | Доказ                                                                                                                                                                                                                                                                                                            |
+| ----- | -------------------- | ------------------------------------------- | ------------------------------------------------------ | -------------------------------------------------------------------- | ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A-01  | добрий               | Анонімний доступ                            | немає authentication context                           | details, list, search, severity-summary, коментар, triage без cookie | `401`, не HTML redirect                           | 401 `application/problem+json`, без `Location`                                                                                                       | тест `A01_Anonymous_Returns401_NotRedirect` (6 маршрутів), ![38-retest-anon-details.png](evidence/lab-04/38-retest-anon-details.png), ![39-retest-anon-search.png](evidence/lab-04/39-retest-anon-search.png)                                                                                                    |
+| A-02  | достатній            | Власний ресурс                              | Alice, інцидент `...0001`                              | GET details                                                          | allow                                             | 200, власні дані                                                                                                                                     | тест `A02_Details_AsOwner_ReturnsOwnIncident`, ![41-retest-alice-own.png](evidence/lab-04/41-retest-alice-own.png)                                                                                                                                                                                               |
+| A-03  | достатній            | Чужий ресурс                                | Alice, інцидент Bob `...0002`                          | GET details з підміненим id                                          | 404                                               | 404, без даних і id Bob                                                                                                                              | тест `A03_Details_AsNonOwner_ReturnsNotFound_WithoutForeignData`, ![37-retest-helper.png](evidence/lab-04/37-retest-helper.png), ![42-retest-alice-bob-404.png](evidence/lab-04/42-retest-alice-bob-404.png)                                                                                                     |
+| A-03R | достатній            | Дозволений аналітичний read                 | Morgan (Analyst), інцидент Alice                       | GET details                                                          | allow для аналізу                                 | 200 з internal comment, update того самого інциденту для Morgan - 403                                                                                | тести `A03R_Details_AsAnalyst_ReturnsIncidentWithInternalComment`, `A04_Update_AsAnalyst_ReturnsForbidden_AndDoesNotChangeResource`, ![58-retest-morgan-read.png](evidence/lab-04/58-retest-morgan-read.png)                                                                                                     |
+| A-04  | добрий               | Чужий ресурс, усі змінювальні дії           | Alice, ресурси Bob `...0002`, `...0004`                | PUT і DELETE з підміненим id                                         | deny, state без змін                              | 404 і 404, title та description Bob без змін, `...0004` існує                                                                                        | тест `A04_UpdateAndDelete_AsNonOwner_ReturnNotFound_AndDoNotChangeResource`, ![49-retest-update-bob-404.png](evidence/lab-04/49-retest-update-bob-404.png), ![54-retest-delete-bob-404.png](evidence/lab-04/54-retest-delete-bob-404.png), ![56-retest-bob-intact.png](evidence/lab-04/56-retest-bob-intact.png) |
+| A-05  | добрий               | List                                        | Alice                                                  | GET list                                                             | лише власні                                       | лише 1, 3, 5                                                                                                                                         | тест `A05_List_AsReporter_ReturnsOnlyOwnIncidents`, ![44-retest-list-own.png](evidence/lab-04/44-retest-list-own.png)                                                                                                                                                                                            |
+| A-06  | добрий               | Вертикальне підвищення привілеїв            | Alice (Reporter), власний New `...0003`                | POST triage                                                          | deny, статус без змін                             | 403, статус New                                                                                                                                      | тест `A06_Triage_AsReporter_ReturnsForbidden_AndStatusUnchanged`, ![52-retest-triage-403-audit.png](evidence/lab-04/52-retest-triage-403-audit.png), ![53-retest-triage-after.png](evidence/lab-04/53-retest-triage-after.png)                                                                                   |
+| A-07  | добрий               | Дозволена привілейована дія                 | Morgan (Analyst), новий інцидент Alice зі статусом New | POST triage, потім повтор                                            | allow, наступний статус від сервера               | 204, статус Triaged, повтор 409                                                                                                                      | тест `A07_Triage_AsAnalyst_MovesNewToTriaged_ThenConflict`                                                                                                                                                                                                                                                       |
+| A-08a | добрий               | Overposting: контракт ігнорує невідоме поле | Alice, власний New                                     | PUT з `status`, `ownerUserId`, `role`                                | 204, змінюється лише content                      | 204, title змінено, статус New, власник Alice                                                                                                        | тест `A08a_Update_WithForgedServerFields_ChangesOnlyContent`, ![50-retest-overposting.png](evidence/lab-04/50-retest-overposting.png), ![51-retest-overposting-after.png](evidence/lab-04/51-retest-overposting-after.png)                                                                                       |
+| A-08b | добрий, альтернатива | Overposting: контракт відхиляє поле         | -                                                      | -                                                                    | -                                                 | не виконувалось - обрано A-08a                                                                                                                       | -                                                                                                                                                                                                                                                                                                                |
+| A-09  | добрий               | Аудиторська подія                           | Alice (Reporter), triage                               | знайти `authorization.denied` у виводі API                           | безпечна подія з тим самим traceId                | подія `subject`, `action=incident.triage`, `resource`, `result=denied`, `occurredAtUtc`, `traceId` збігається з тілом 403, без пароля, cookie і body | тест `A09_DeniedTriage_WritesSafeAuditEvent_WithResponseTraceId`, ![52-retest-triage-403-audit.png](evidence/lab-04/52-retest-triage-403-audit.png)                                                                                                                                                              |
+| A-10  | добрий, політика 404 | Нерозрізнюваність 404                       | той самий клієнт Alice                                 | GET чужого `...0002` і неіснуючого id                                | однакові status, Content-Type, тіло без `traceId` | однакові                                                                                                                                             | тест `A10_ForeignAndUnknownId_ReturnSame404`, ![42-retest-alice-bob-404.png](evidence/lab-04/42-retest-alice-bob-404.png), ![43-retest-unknown-404.png](evidence/lab-04/43-retest-unknown-404.png)                                                                                                               |
+| A-11  | відмінний            | Власні endpoint-и ЛР 1-2                    | Alice і Morgan                                         | search `O'Brien`, severity-summary                                   | лише дозволена множина                            | Alice - `[]` і Medium 1, Low 2, High 0, Morgan знаходить запис Bob                                                                                   | тест `A11_SearchAndSummary_AsReporter_ExcludeForeignIncidents`, ![45-retest-search-a11.png](evidence/lab-04/45-retest-search-a11.png), ![46-retest-summary-a11.png](evidence/lab-04/46-retest-summary-a11.png)                                                                                                   |
+| A-12  | добрий               | Child resource та internal comment          | Alice, коментар Bob `30...0002`, internal `30...0003`  | GET `/api/incident-comments/{id}` і details                          | deny 404, internal не у відповіді Reporter        | 404 і 404, у details Alice internal comment відсутній, Morgan одержує internal 200                                                                   | тест `A12_ChildComments_AsReporter_FollowParentAndInternalRules`, ![41-retest-alice-own.png](evidence/lab-04/41-retest-alice-own.png), ![47-retest-child-bob-comment.png](evidence/lab-04/47-retest-child-bob-comment.png), ![48-retest-internal-comment.png](evidence/lab-04/48-retest-internal-comment.png)    |
 
-| ID | Рівень | Сценарій | Передумови | Дія | Очікувано | Фактично | Доказ |
-|---|---|---|---|---|---|---|---|
-| A-01 | добрий | Анонімний доступ | немає authentication context | protected request | `401`, не HTML redirect | … | integration test / response |
-| A-02 | достатній, обов’язковий | Власний ресурс | Alice має власний seed resource | вибрана головна action: details/read або одна mutation | allow | … | автоматичний HTTP test |
-| A-03 | достатній, обов’язковий | Чужий ресурс | Alice, Bob resource | та сама головна action з підміненим id | `403` або `404`; для mutation state без змін | … | автоматичний HTTP test; для mutation стан до/після |
-| A-03R | достатній, entry-контракт ЛР 5 | Дозволений аналітичний read | Morgan (`Analyst`), ресурс Alice | `GET /api/incidents/{id}` | allow для аналізу; не надає права довільної mutation | … | test / `.http` |
-| A-04 | добрий | Чужий ресурс, усі змінювальні дії | Alice, Bob resource | підмінити id в update/delete | deny, state без змін | … | тест + порівняння стану до/після |
-| A-05 | добрий | List | Alice | list | лише дозволена множина | … | response / test |
-| A-06 | добрий | Вертикальне підвищення привілеїв | звичайний Reporter | privileged transition | deny, status без змін | … | тест + порівняння стану до/після |
-| A-07 | добрий | Дозволена привілейована дія | роль і контекст за матрицею | transition за матрицею | allow | … | автоматичний HTTP test |
-| A-08a | добрий, альтернатива A-08b | Надлишкове присвоєння (overposting): контракт ігнорує невідоме поле | authenticated user; DTO не містить protected field | forged owner/role/status field у regular update | дозволений content може змінитися, але protected state — ні | … | тест контракту + порівняння стану до/після |
-| A-08b | добрий, альтернатива A-08a | Overposting: контракт відхиляє зайве або заборонене поле | authenticated user; контракт явно відхиляє поле | той самий forged request | `400` або `403` за контрактом; весь protected state без змін | … | тест контракту + порівняння стану до/після |
-| A-09 | добрий | Аудиторська подія (audit event) | denied privileged request | знайти authorization.denied у виводі API | безпечна подія без секретів | … | доказ із вилученими секретами |
-| A-10 | добрий, лише політика `404` | Нерозрізнюваність `404` | той самий authenticated client; identifier чужого й identifier неіснуючого ресурсу | виконати два однакові за структурою запити, змінивши лише id | однакові status, `Content-Type` і тіло після вилучення полів кореляції запиту (`traceId`, `requestId`) | … | integration test + дві збережені відповіді |
-| A-11 | відмінний | Власні endpoint-и ЛР 1–2 | Alice; власні endpoint-и з ЛР 1–2 | виконати `severity-summary` і `search` | результат обмежений дозволеною множиною | … | response / test |
-| A-12 | добрий | Child resource та internal comment | Alice (`Reporter`); прямий id коментаря Morgan до інциденту Bob (comment-2 у seed-identifiers.json) | запросити `GET /api/incident-comments/{id}` і перевірити details-проєкцію для `Reporter` | direct child access — deny за зафіксованою політикою; internal comment не потрапляє у відповідь `Reporter` | … | integration test + response для details |
+## Основний finding і залишковий ризик
 
-## Основний finding і залишковий ризик (усі рівні)
-Контекст → гіпотеза → стан до й hash → першопричина → fix і DTO → retest → позитивна регресія → короткий залишковий ризик. CSRF для cookie mutation до ЛР 6 — задокументований навчальний борг.
+1. Контекст: ресурс `Incident` baseline 2-A, дії details, update, delete, triage і коментарі, суб'єкти Alice і Bob (Reporter), Morgan (Analyst), лише локальний стенд зі штучними даними.
+2. Гіпотеза: Alice з власною дійсною cookie прочитає й змінить інцидент Bob, якщо підставить його id.
+3. Стан до: на commit `bbc0ad7` Alice одержала 200 з даними Bob, змінила й видалила його інциденти і як Reporter виконала triage (таблиця 1, рис. 13, 18, 25-33).
+4. Першопричина: шлях даних шукав ресурс лише за id і не мав рішення для пари principal + ресурс. `[Authorize]` або `RequireAuthorization()` перевіряє тільки автентифікацію і не знає власника завантаженого рядка.
+5. Виправлення: окремий `IncidentAuthorizationHandler` для кожного окремого ресурсу, `VisibleTo` для множин, єдиний `IncidentNotFound()`, рішення перед будь-якою зміною стану. Межі DTO - `UpdateIncidentRequest` без `Status`, owner і статус задає лише сервер.
+6. Retest: запити дають 401, 404 і 403, стан Bob не змінюється (таблиця 2).
+7. Позитивна регресія: Alice читає й редагує власний інцидент, видаляє власний New (тест A-08a), Morgan читає інцидент Alice і виконує дозволений triage (A-03R, A-07).
+8. Залишковий ризик: Захист CSRF для cookie-автентифікованих змінювальних endpoint-ів не реалізовано, це задокументований навчальний борг ЛР 3 до ЛР 6. Конкурентні transition не перевірялись, бо сценарію від викладача немає (два одночасні triage можуть обидва прочитати New). Batch і export endpoint-ів у проєкті немає.
 
-## Browser flow (усі рівні)
-Login на auth-lab.html → головна сторінка → власні details → Bob probe.
-Результат UI/HTTP; жодних значень credentials, cookie або повного Set-Cookie.
-Знімки обох станів — як рис. 7 методички, без вкладок Application/Network.
+Схема рішення:
 
-## Добрий рівень: роль, transition, child, audit (також для відмінного)
-Дозволений/заборонений transition, server next status, контекст New→Triaged.
-Morgan до Bob comment; internal до Alice: Reporter deny, Analyst parent-authorized.
-Audit subject/action/resource/result/UTC/trace; збіг trace у відповіді і події.
+Запит Alice з id -> cookie формує verified principal -> endpoint завантажує `Incident` за id -> `IncidentAuthorizationHandler` (owner, роль, статус) -> невидимий 404, видимий без права 403 -> дозволено -> зміна стану і `SaveChangesAsync` -> відповідь. Для множин: principal -> `VisibleTo` у SQL -> лише дозволені рядки.
 
-## Відмінний рівень (додатково до всього доброго)
-Відокремлений resource-based handler або policy; A-11 для наявних search і severity-summary, дозволена множина; окремий finding додаткової проблеми з доказом до/після.
-A-08a/A-08b і A-06 підтверджують захист privilege-related field і вертикальний regression; нових повторних тестів не потрібно.
-Обґрунтування видимості ресурсу, прав кожної ролі (least privilege), охоплення і залишкових ризиків.
-Batch/export — лише якщо є; concurrent transitions — лише якщо викладач надав відтворюваний сценарій; інакше «не застосовується».
+## Browser flow
 
-## Перевірки, відтворення і подання (усі рівні)
-ОС/.NET/PostgreSQL; точні команди; фактичні counts/status і recovery.
-Build/tests output; hash тегу v0.4.0 (= fixed commit; вписується наступним commit після тегу); посилання commit/tag і Moodle.
-Окремо: невиконані необов’язкові перевірки/обмеження.
+Firefox, `http://localhost:5080/auth-lab.html`:
 
-## Використання ШІ (довільна форма; журнал — за бажанням)
-Не використовував/ла ШІ / використав/ла дозволеним способом:
-| Дата/інструмент | Для чого | Що використано | Що перевірено самостійно |
-|---|---|---|---|
-| | | | |
-Паролі, cookie, реальні персональні дані й приватний репозиторій не надсилайте.
+1. Вхід Alice і «Мій профіль» - 200, роль Reporter (рис. 59).
+2. На головній сторінці список містить лише три інциденти Alice, деталі власного інциденту відображено (рис. 60).
+3. Запит деталей Bob через Console командою `loadIncidentDetails("20000000-0000-0000-0000-000000000002")` дає 404 і повідомлення «Помилка: Інцидент не знайдено» (рис. 61).
+4. Клієнт `app.js` формує дозволений результат через `createTextElement(...)`, а відмову записує в `detailsElement.textContent`, `innerHTML` не використовується (тест `ClientScript_DoesNotUseDangerousInnerHtmlSink`).
+5. Клієнт лише показує рішення сервера, доступ він не контролює.
+
+## Добрий рівень: роль, transition, child, audit
+
+- Transition: `POST /api/incidents/{id}/triage` не має body. Сервер завантажує tracked entity, handler перевіряє роль Analyst з principal, потім сервер перевіряє, що поточний статус New, і сам встановлює Triaged із записом у `IncidentStatusHistory`. Reporter - 403 (A-06), Analyst - 204, повтор - 409 (A-07). Роль у JSON або статус у body не впливають на рішення.
+- Child: Коментар завантажується разом із parent incident, далі те саме рішення Read для parent і окреме рішення ReadInternalComments для internal comment (A-12). Та сама умова діє в details-проєкції через `includeInternal`.
+- Audit: Рішення triage ухвалюється всередині endpoint, тому відмову записано подією:
+
+```
+warn: SecureLab.AuthorizationAudit[0]
+      authorization.denied subject=10000000-0000-0000-0000-000000000001 action=incident.triage resource=20000000-0000-0000-0000-000000000003 result=denied occurredAtUtc=2026-10-15T06:32:52.0238280+00:00 traceId=00-30da825b9611b1d682e52fff9a92af89-01ec2b32d14fd4eb-00
+```
+
+`traceId` збігається з полем `traceId` у тілі відповіді 403 на той самий запит (рис. 52). Подія містить лише id суб'єкта з principal, дію, id ресурсу, результат і серверний час, без пароля, cookie і body запиту.
+
+## Відмінний рівень
+
+- Handler: рішення для окремого ресурсу винесено в окремий клас `IncidentAuthorizationHandler` з операціями `IncidentOperations`. Endpoints не містять власних умов owner чи ролі, вони лише викликають `IAuthorizationService.AuthorizeAsync`. Для множин те саме правило застосовано одним методом `VisibleTo`, щоб умова стояла в SQL, а не фільтрувала дані в пам'яті.
+- Додатковий finding A-11: контекст - наявні з ЛР 1-2 `GET /api/incidents/search` і `GET /api/incidents/severity-summary`. Стан до - search був доступний навіть анонімно й знаходив запис Bob `O'Brien classroom report`, summary для Alice рахував High 1 від інциденту Bob (рис. 15, 21, 22). Першопричина - обидва запити будувались над усією таблицею `incidents` без умови власника, а search ще й не був захищений автентифікацією. Виправлення - `RequireAuthorization()` для search і `VisibleTo(userId, isAnalyst)` до сортування й `Take(50)` у search та до `GroupBy` у summary. Після - анонім 401, Alice одержує `[]` і Low 2, Medium 1, High 0, Morgan як Analyst і далі знаходить запис Bob (рис. 39, 45, 46, тест A-11). Агрегат теж є витоком: навіть без самих рядків лічильник High 1 показував Alice, що в системі є чужий інцидент високої важливості.
+- Overposting privilege-related field і вертикальний regression підтверджено тестами A-08a і A-06.
+- Видимість ресурсу: для Reporter сам факт існування чужого інциденту є чужими даними, тому відповідь 404 не відрізняється від відповіді для неіснуючого id (A-10). Коли ресурс видимий (власний або для Analyst), відмова в дії - 403, бо приховувати вже відоме існування немає сенсу, а явна відмова зрозуміліша клієнту.
+- Least privilege: Reporter має рівно ті права, без яких не веде власні повідомлення. Analyst читає все, бо інакше неможлива класифікація, але має лише один змінювальний перехід, content update і delete йому не потрібні. Administrator не одержує невизначених правил, бо 2-A не публікує адміністративних операцій над інцидентами.
+- Охоплення і залишкові ризики: gеревірено всі маршрути Incident проєкту: list, details, search, severity-summary, create (ЛР 3), update, delete, triage і коментар.
+
+## Перевірки, відтворення і подання
+
+- Середовище: macOS, .NET SDK 10.0.302, PostgreSQL 18.4 у Docker Compose, VS Code з REST Client, Firefox.
+- Команди:
+
+  ```
+  docker compose --env-file infra/.env.example -f infra/compose.yaml up -d --wait
+  ```
+
+  ```
+  dotnet run --project src/SecureLab.Api -- --reset-database
+  ```
+
+  ```
+  dotnet test tests/SecureLab.Api.Tests/SecureLab.Api.Tests.csproj --configuration Release
+  ```
+
+  ```
+  dotnet run --project src/SecureLab.Api --launch-profile http
+  ```
+
+- Результат: старт 35 тестів пройдено (рис. 6), після виправлення 54 тести, failed 0 (рис. 36).
+- Commits: `8c74e39` seed, `bbc0ad7` vulnerable, `2c3f7bb` fixed, тег `v0.4.0` = `2c3f7bb`.
+- Пароль задавався лише через `read -s` у терміналі. REST Client не зміг передати пароль через `{{$processEnv ...}}`, тому для запитів пароль тимчасово вписувався у файл `.http` поза Git і прибирався до commit. У репозиторії `tests/http/lab-04-access.http` містить лише `{{$processEnv SeedUsers__Password}}`.
+
+## Декларація використання ШІ
+
+| Інструмент              | Для чого                                                                                                                                                | Що використано                                                                                                                                                                  | Що перевірено самостійно                                                                                                                                                                                                                                         |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Claude Code (Anthropic) | покроковий план за методичкою, підказки для вразливого стану, resource-based handler, обмеження запитів, audit, автотестів A-01...A-12 і чернетка звіту | код створено за підказками ШІ й перевірено власноруч, матрицю доступу, політику 404/403/409, правило delete лише для New і права Administrator обрано й обґрунтовано самостійно | PoC і retest виконано вручну через REST Client, helper і Firefox DevTools з фотофіксацією, 54 автотести пройдено після reset на fixed commit, збіг traceId в audit і відповіді перевірено за власним виводом API, пароль і значення cookie до ШІ не передавались |
