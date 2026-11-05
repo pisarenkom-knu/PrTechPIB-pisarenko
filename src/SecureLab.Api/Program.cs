@@ -54,6 +54,20 @@ builder.Services.AddRateLimiter(options =>
     });
 });
 
+// ЛР 5 - навчальна CORS policy лише в Development, точний origin probe 4173, 4174 - контроль
+if (builder.Environment.IsDevelopment())
+{
+    builder.Services.AddCors(options =>
+    {
+        options.AddPolicy("Lab05BrowserProbe", policy =>
+        {
+            policy.WithOrigins("http://localhost:4173")
+                .WithMethods("GET")
+                .WithHeaders("X-Lab-Cors-Probe");
+        });
+    });
+}
+
 var app = builder.Build();
 
 var resetRequested = args.Contains("--reset-database", StringComparer.Ordinal);
@@ -78,6 +92,13 @@ if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
     app.MapScalarApiReference();
+}
+
+// ЛР 5 - CORS після routing і до authentication, щоб дозвіл був і на 401/403
+app.UseRouting();
+if (app.Environment.IsDevelopment())
+{
+    app.UseCors("Lab05BrowserProbe");
 }
 
 app.UseAuthentication();
