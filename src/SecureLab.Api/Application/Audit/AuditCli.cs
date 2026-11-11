@@ -8,6 +8,7 @@ namespace SecureLab.Api.Application.Audit;
 // ЛР 6, advanced variant - CLI замість публічного endpoint
 //   --export-audit <file>   вивантажити журнал у JSONL (рядок на запис у порядку sequence)
 //   --verify-audit [<file>] перевірити БД або копію JSONL разом із файлом-якорем
+// dotnet run запускає процес із теки проєкту, тому шлях до файлу краще вказувати абсолютний
 // Код завершення: 0 цілий, 2 цілий із попередженням, 1 порушено або помилка
 public static class AuditCli
 {
@@ -29,6 +30,20 @@ public static class AuditCli
     }
 
     public static async Task<int> RunAsync(IServiceProvider services, Command command)
+    {
+        try
+        {
+            return await RunCoreAsync(services, command);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
+        {
+            // Без stack trace - шлях і тип помилки достатні оператору
+            Console.WriteLine($"FAIL: {exception.GetType().Name}: {exception.Message}");
+            return 1;
+        }
+    }
+
+    private static async Task<int> RunCoreAsync(IServiceProvider services, Command command)
     {
         await using var scope = services.CreateAsyncScope();
         var options = scope.ServiceProvider.GetRequiredService<AuditLogOptions>();
