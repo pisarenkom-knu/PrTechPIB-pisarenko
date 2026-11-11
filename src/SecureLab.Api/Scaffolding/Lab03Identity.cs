@@ -2,6 +2,7 @@ using System.Security.Claims;
 using Microsoft.AspNetCore.Identity;
 using SecureLab.Api.Data;
 using SecureLab.Api.Data.Entities;
+using SecureLab.Api.Presentation.Endpoints;
 
 namespace SecureLab.Api.Scaffolding;
 
@@ -136,7 +137,9 @@ public static class Lab03Identity
                 .LogInformation("Auth event {EventType}: result {Result}, user {UserId}, trace {TraceId}",
                     "logout", "success", userId ?? "anonymous", httpContext.TraceIdentifier);
             return Results.NoContent();
-        });
+        })
+            // ЛР 6 - фільтр перевіряє токен до SignOutAsync, чужий origin не завершить сеанс
+            .RequireAntiforgeryToken();
         // Профіль лише з verified principal, X-Demo-UserId більше не читається
         app.MapGet("/api/me", GetCurrentUser).RequireAuthorization();
         // Приклад лише mechanics: не повертає identity і не реалізує оцінювану operation.

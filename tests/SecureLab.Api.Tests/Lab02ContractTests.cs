@@ -25,6 +25,7 @@ public sealed class Lab02ContractTests(SecureLabApiFactory factory)
     {
         var body = new { title = "   ", description = "Опис є.", severity = "7" };
         using var alice = await factory.LoginAsync("alice", StudyPassword);
+        await alice.UseAntiforgeryTokenAsync();
 
         using var response = await alice.PostAsJsonAsync("/api/incidents", body);
 
@@ -54,6 +55,7 @@ public sealed class Lab02ContractTests(SecureLabApiFactory factory)
         };
 
         using var alice = await factory.LoginAsync("alice", StudyPassword);
+        await alice.UseAntiforgeryTokenAsync();
 
         try
         {
@@ -133,6 +135,7 @@ public sealed class Lab02ContractTests(SecureLabApiFactory factory)
         };
 
         using var alice = await factory.LoginAsync("alice", StudyPassword);
+        await alice.UseAntiforgeryTokenAsync();
 
         try
         {

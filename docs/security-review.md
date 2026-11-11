@@ -60,6 +60,20 @@
 
 Для всіх: мінімальний pack SQLi/authentication/authorization-IDOR/XSS/CSRF. Добрий/відмінний: ще validation/CORS/rate limiting. Відмінний: автоматизований повний REG-CSRF-01 (login/cookie → відмова → незмінний стан → token → успіх → змінений стан), команда й фактичний результат. Початкові ID сценаріїв (T/S/A/E/R/REG), команда або тест, передумова, точний результат, перевірка стану ресурсу, перевірений фінальний commit.
 
+### 7.1. REG-CSRF-01
+
+Автоматизовано в `tests/SecureLab.Api.Tests/Lab06CsrfRegressionTests.cs`, тест `RegCsrf01_UpdateWithoutToken_IsRejected_StateUnchanged_ThenTokenSucceeds`. Команда `dotnet test SecureLab.sln -c Release --filter "FullyQualifiedName~Lab06"`. Harness власний: `SecureLabApiFactory`, `CookieClient.LoginAsync` (реальний login і cookie), `UseAntiforgeryTokenAsync` одержує token тим самим клієнтом. Header не додається глобально, негативна частина йде без нього.
+
+| Поле | Без token / невалідний token | Валідна пара токенів |
+|---|---|---|
+| Передумови | reset, окремий сеанс Alice створює власний інцидент з описом «Опис до REG-CSRF-01», основний клієнт Alice входить без token | той самий клієнт після `UseAntiforgeryTokenAsync` |
+| Request | `PUT /api/incidents/{id}` з новим описом без `X-CSRF-TOKEN`, а також з `invalid-test-value` і з token Bob | той самий `PUT` з `X-CSRF-TOKEN` |
+| Очікуваний HTTP результат | 400 `application/problem+json`, title «Antiforgery token відсутній або недійсний.», без `errors` | 204 |
+| Перевірка після request | `GET /api/incidents/{id}` повертає незмінний опис | `GET` повертає саме «Змінено з токеном» |
+| Доказ | `lr06-f02-06` (6 тестів Lab06 Passed), ручний curl `lr06-s2-10` (triage без header 400, стан New) | `lr06-s2-10` (з header 204, стан Triaged) |
+
+Додатково `Perimeter_EveryCookieMutationWithoutToken_IsRejected` перевіряє той самий 400 на SC-01...SC-05 і незмінність ресурсу та сеансу, а `F02_TriageAsSimpleFormPost_WithoutToken_IsRejected_AndStatusStaysNew` відтворює F-02. Старі змінювальні тести ЛР 2-4 (T-02, A-04...A-09, A-06 logout) після login одержують власний token, тому знову перевіряють свою первинну мету: T-02 падав би без валідації DTO, бо перевіряє `errors.title`, а не лише 400. Повний набір після reset: `Passed: 60, Failed: 0` (`lr06-s2-15`).
+
 ## 8. Hardening controls
 
 Для всіх: наявні controls; наявний login limiter — повторна перевірка (quota, 429, відновлення), відсутній — gap або виключення з причиною. Добрий/відмінний: наявні headers, CORS, search limiter (два partitions, quota, 429, відновлення). CSP, якої не було, — N/A на достатньому/доброму; для відмінного вона обов’язкова й не має ламати client. Добрий/відмінний: змістові відмінності Development/Production. Відмінний: погодження advanced variant до реалізації й фактична перевірка; Redis — shared state, TTL, partition isolation, failure mode.
@@ -103,11 +117,36 @@ Profile Development (`dotnet run --project src/SecureLab.Api`), бо policy `Lab
 
 **Профіль cookie.** `.AspNetCore.Identity.Application`: `HttpOnly`, `SameSite=Lax`, `Secure` поза Development (`CookieSecurePolicy.Always`), у Development `SameAsRequest`, бо стенд працює по HTTP (`Scaffolding/Lab03Identity.cs`). `HttpOnly` не дає скриптам сторінки читати cookie, але браузер сам додає її до запитів, тож захисту від CSRF вона не дає.
 
-| ID    | Method + route | Джерело / розбіжність                        | Яка зміна стану | Cookie authentication | Browser-accessible | Antiforgery validation        | Regression ID |
-| ----- | -------------- | -------------------------------------------- | --------------- | --------------------- | ------------------ | ----------------------------- | ------------- |
-| SC-01 | заповнити      | ЛР 2–5 / OpenAPI / client call / DISCREPANCY | заповнити       | так/ні                | так/ні             | explicit / automatic / absent | фактичний ID  |
+### 8.3. Периметр змінювальних маршрутів і antiforgery (етап 2, п. 3-5)
 
-Login і register внесіть до таблиці з позначкою Cookie authentication = ні та окремим рішенням щодо ризику й меж огляду. Logout входить до cookie-периметра; перевірка токена — до SignOutAsync.
+Джерела зіставлено трьома способами на одному стані: `git grep -n -E "\.Map(Post|Put|Patch|Delete)\(" -- src` (7 маршрутів сервера), `git grep -n -E "method: *.(POST|PUT|PATCH|DELETE)" -- src/SecureLab.Api/Client` (3 виклики клієнта: `postJson` для register, login, create у `auth-lab.js`, logout у `auth-lab.js`, create у `browser-lab.js`) і `GET /openapi/v1.json` у Development (ті самі 7 змінювальних шляхів). `MapMethods` і контролерів у проєкті немає. Жоден GET, HEAD чи OPTIONS не змінює стан.
+
+**Контракт.** Сервіс `AddAntiforgery` у `Program.cs` до `builder.Build()`, header `X-CSRF-TOKEN`, cookie `securelab-af` (`HttpOnly`, `SameSite=Strict`). Видача `GET /api/antiforgery/token` (лише автентифікованому principal) викликає `GetAndStoreTokens` і повертає `{ "token": ... }`. Єдине місце перевірки `AntiforgeryValidationFilter` у `Presentation/Endpoints/AntiforgeryEndpoints.cs`: `ValidateRequestAsync`, а `AntiforgeryValidationException` перетворюється на 400 Problem Details з title «Antiforgery token відсутній або недійсний.» без `errors`. Фільтр підключено методом `RequireAntiforgeryToken()` до кожного рядка окремо, не до групи з GET. `UseAntiforgery()` не потрібний, бо жоден маршрут не приймає form data, тому колонка всюди explicit. Клієнт `Client/csrf.js` (`SecureLabCsrf.mutate`) одержує token lazy перед першою mutation сторінки, тримає його лише в пам’яті, додає header лише до same-origin POST, PUT, PATCH, DELETE, скидає token після login, logout, 400 чи 401 і на `pageshow`. Підключено перед page script на `auth-lab.html` і `browser-lab.html`. На `index.html` (`app.js`) змінювальних викликів немає, тому helper там не потрібний.
+
+| ID | Method + route | Джерело / розбіжність | Яка зміна стану | Cookie authentication | Browser-accessible | Antiforgery validation | Regression ID |
+|---|---|---|---|---|---|---|---|
+| SC-01 | `POST /api/incidents` | ЛР 2 (`Scaffolding/Lab02Endpoints.cs`), OpenAPI, client `auth-lab.js` і `browser-lab.js` | створює Incident, власник з principal | так | так | explicit, `RequireAntiforgeryToken()` | Perimeter test, T-02 з токеном, UI create |
+| SC-02 | `PUT /api/incidents/{id}` | ЛР 4 (`IncidentEndpoints.UpdateAsync`), OpenAPI. DISCREPANCY: клієнтського виклику немає | змінює title і description власного інциденту | так | так (cookie додається до будь-якого запиту браузера) | explicit | REG-CSRF-01, invalid і чужий token |
+| SC-03 | `DELETE /api/incidents/{id}` | ЛР 4 (`IncidentEndpoints.DeleteAsync`), OpenAPI. DISCREPANCY: клієнтського виклику немає | видаляє власний інцидент зі статусом New | так | так | explicit | Perimeter test (ресурс лишився) |
+| SC-04 | `POST /api/incidents/{id}/triage` | ЛР 4 (`IncidentEndpoints.TriageAsync`), OpenAPI. DISCREPANCY: клієнтського виклику немає | привілейований перехід New -> Triaged | так | так, простою HTML-формою без тіла (F-02) | explicit | F-02 test, ручний retest з 4175 |
+| SC-05 | `POST /api/auth/logout` | ЛР 3 (`Scaffolding/Lab03Identity.cs`), OpenAPI, client `auth-lab.js` | завершує сеанс (`SignOutAsync`) | так | так, простою формою | explicit, фільтр виконується до `SignOutAsync` | Perimeter test (`/api/me` 200 після відмови), A-06 з токеном |
+| SC-06 | `POST /api/auth/login` | ЛР 3, OpenAPI, client `auth-lab.js` | створює cookie-сеанс | ні | так | absent, рішення нижче | `lr06-s2-16`, A-07, rate limit тести |
+| SC-07 | `POST /api/auth/register` | ЛР 3, OpenAPI, client `auth-lab.js` | створює обліковий запис | ні | так | absent, рішення нижче | `lr06-s2-16`, тести реєстрації ЛР 3 |
+
+**DISCREPANCY SC-02, SC-03, SC-04.** Маршрути є на сервері й в OpenAPI, але клієнт їх не викликає. Це не баг документації: їх додано в ЛР 4 як HTTP-контракт, перевірений тестами й `.http`. Для CSRF важливий саме HTTP endpoint, а не наявність кнопки, тому всі три захищено так само. Коли з’явиться UI, він має йти через `SecureLabCsrf.mutate`.
+
+**Рішення для login і register.** Вони не довіряють наявній authentication cookie, а login сам її створює. Ризики login-CSRF (зловмисник входить жертвою у свій акаунт) і небажаної реєстрації залишено в межах огляду, але токен не додано. Причина: обидва маршрути приймають лише JSON. Проста форма з іншого origin (`application/x-www-form-urlencoded` або `text/plain`) до handler не доходить (фактично 404, див. кандидат F-03), а JSON з іншого origin вимагає preflight, на який API для 4175 не повертає `Access-Control-Allow-Origin` (`lr06-s2-16`). Токен для анонімного login потребував би окремого bootstrap до входу, що методика радить проєктувати окремо. Залишковий ризик: якщо CORS колись дозволить чужий origin з credentials для POST, login-CSRF стане можливим.
+
+**Ручна перевірка всіх змінювальних дій UI (Chrome, Development, після впровадження).**
+
+| Дія | Сторінка, користувач | Результат | Доказ |
+|---|---|---|---|
+| створення | `auth-lab.html`, Alice | `Створено: 201`, перед ним `token 200` з `csrf.js:22`, POST з `csrf.js:42` | `lr06-s2-11`, `lr06-s2-12` (фільтр `has-request-header:x-csrf-token` показує лише mutation, значення не видно) |
+| створення після F5 | `auth-lab.html`, Alice | `201`, token одержано знову | `lr06-s2-13` |
+| logout | `auth-lab.html`, Alice | `Logout: 204, повторний /api/me: 401`, header є | `lr06-s2-13` |
+| створення після нового login | `auth-lab.html`, Bob | `201` з новим token | `lr06-s2-13` |
+| створення й читання | `browser-lab.html`, Bob | `POST incidents 201`, далі `GET: 200` | `lr06-s2-14` |
+| атака з іншого origin | `http://localhost:4175`, Morgan | `triage 400`, статус 0005 лишився `New` | `lr06-f02-05`, `lr06-f02-06` |
 
 ## 9. Dependency and secret audit
 

@@ -35,14 +35,18 @@ public static class IncidentEndpoints
             .ProducesValidationProblem();
 
         // ЛР 4 - рішення для ресурсу приймає IncidentAuthorizationHandler усередині endpoint
+        // ЛР 6 - кожна cookie-authenticated mutation вимагає валідну пару antiforgery-токенів
         group.MapPut("/{id:guid}", UpdateAsync)
-            .WithName("UpdateIncident");
+            .WithName("UpdateIncident")
+            .RequireAntiforgeryToken();
 
         group.MapDelete("/{id:guid}", DeleteAsync)
-            .WithName("DeleteIncident");
+            .WithName("DeleteIncident")
+            .RequireAntiforgeryToken();
 
         group.MapPost("/{id:guid}/triage", TriageAsync)
-            .WithName("TriageIncident");
+            .WithName("TriageIncident")
+            .RequireAntiforgeryToken();
 
         endpoints.MapGet("/api/incident-comments/{id:guid}", GetCommentAsync)
             .WithTags("Incidents")

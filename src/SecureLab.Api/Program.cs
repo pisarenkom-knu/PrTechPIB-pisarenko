@@ -27,6 +27,15 @@ builder.Services.AddScoped<IAuthorizationHandler, IncidentAuthorizationHandler>(
 
 builder.AddLab03Identity();
 
+// ЛР 6 - antiforgery для cookie-сеансу, клієнт повертає request token у цьому header
+builder.Services.AddAntiforgery(options =>
+{
+    options.HeaderName = AntiforgeryEndpoints.HeaderName;
+    options.Cookie.Name = "securelab-af";
+    options.Cookie.HttpOnly = true;
+    options.Cookie.SameSite = SameSiteMode.Strict;
+});
+
 // Обмеження спроб входу - ключ за IP, за замовчуванням 5 запитів за 60 секунд
 builder.Services.AddRateLimiter(options =>
 {
@@ -136,6 +145,7 @@ app.MapGet("/health", async (SecureLabDbContext dbContext, CancellationToken can
     .Produces(StatusCodes.Status200OK)
     .ProducesProblem(StatusCodes.Status503ServiceUnavailable);
 
+app.MapAntiforgeryEndpoints();
 app.MapIncidentEndpoints();
 app.MapLab03Identity();
 app.MapLab02Endpoints();

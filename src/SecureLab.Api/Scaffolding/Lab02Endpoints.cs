@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using SecureLab.Api.Application.Incidents;
 using SecureLab.Api.Data;
 using SecureLab.Api.Data.Entities;
+using SecureLab.Api.Presentation.Endpoints;
 
 namespace SecureLab.Api.Scaffolding;
 
@@ -136,7 +137,9 @@ public static class Lab02Endpoints
             return Results.Created($"/api/incidents/{incident.Id}", new CreatedIncidentResponse(
                 incident.Id, incident.Title, incident.Severity.ToString(), incident.Status.ToString(),
                 incident.OccurredAtUtc, incident.CreatedAtUtc));
-        }).RequireAuthorization();
+        }).RequireAuthorization()
+            // ЛР 6 - створення від імені cookie-сеансу лише з валідним antiforgery-токеном
+            .RequireAntiforgeryToken();
     }
 
     // Для буквального пошуку екрануємо: \, потім _ і %

@@ -95,7 +95,9 @@ public sealed class Lab04AuthorizationTests(SecureLabApiFactory factory)
     public async Task A04_UpdateAndDelete_AsNonOwner_ReturnNotFound_AndDoNotChangeResource()
     {
         using var alice = await factory.LoginAsync("alice", StudyPassword);
+        await alice.UseAntiforgeryTokenAsync();
         using var bob = await factory.LoginAsync("bob", StudyPassword);
+        await bob.UseAntiforgeryTokenAsync();
         var before = await bob.GetFromJsonAsync<IncidentDetailsResponse>(
             $"/api/incidents/{DbSeeder.BobIncidentId}");
 
@@ -119,6 +121,7 @@ public sealed class Lab04AuthorizationTests(SecureLabApiFactory factory)
     public async Task A04_Update_AsAnalyst_ReturnsForbidden_AndDoesNotChangeResource()
     {
         using var morgan = await factory.LoginAsync("morgan", StudyPassword);
+        await morgan.UseAntiforgeryTokenAsync();
         var before = await morgan.GetFromJsonAsync<IncidentDetailsResponse>(
             $"/api/incidents/{DbSeeder.AliceIncidentId}");
 
@@ -149,6 +152,7 @@ public sealed class Lab04AuthorizationTests(SecureLabApiFactory factory)
     public async Task A06_Triage_AsReporter_ReturnsForbidden_AndStatusUnchanged()
     {
         using var alice = await factory.LoginAsync("alice", StudyPassword);
+        await alice.UseAntiforgeryTokenAsync();
         var before = await alice.GetFromJsonAsync<IncidentDetailsResponse>(
             $"/api/incidents/{AliceNewIncidentId}");
 
@@ -165,7 +169,9 @@ public sealed class Lab04AuthorizationTests(SecureLabApiFactory factory)
     public async Task A07_Triage_AsAnalyst_MovesNewToTriaged_ThenConflict()
     {
         using var alice = await factory.LoginAsync("alice", StudyPassword);
+        await alice.UseAntiforgeryTokenAsync();
         using var morgan = await factory.LoginAsync("morgan", StudyPassword);
+        await morgan.UseAntiforgeryTokenAsync();
         var id = await CreateIncidentAsync(alice, $"Triage-{Guid.NewGuid():N}");
 
         try
@@ -190,6 +196,7 @@ public sealed class Lab04AuthorizationTests(SecureLabApiFactory factory)
     public async Task A08a_Update_WithForgedServerFields_ChangesOnlyContent()
     {
         using var alice = await factory.LoginAsync("alice", StudyPassword);
+        await alice.UseAntiforgeryTokenAsync();
         var id = await CreateIncidentAsync(alice, $"Overposting-{Guid.NewGuid():N}");
 
         try
@@ -229,6 +236,7 @@ public sealed class Lab04AuthorizationTests(SecureLabApiFactory factory)
         using var host = factory.WithWebHostBuilder(builder =>
             builder.ConfigureLogging(logging => logging.AddProvider(logs)));
         using var alice = await LoginAsync(host, "alice");
+        await alice.UseAntiforgeryTokenAsync();
 
         using var response = await alice.PostAsync($"/api/incidents/{AliceNewIncidentId}/triage", content: null);
         var body = await response.Content.ReadFromJsonAsync<JsonObject>();
