@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authorization;
 using SecureLab.Api.Scaffolding;
 using Microsoft.EntityFrameworkCore;
 using Scalar.AspNetCore;
+using SecureLab.Api.Application.Audit;
 using SecureLab.Api.Application.Incidents;
 using SecureLab.Api.Data;
 using SecureLab.Api.Presentation.Endpoints;
@@ -22,6 +23,11 @@ var connectionString = builder.Configuration.GetConnectionString("SecureLab")
 builder.Services.AddDbContext<SecureLabDbContext>(options =>
     options.UseNpgsql(connectionString));
 builder.Services.AddScoped<IncidentQueries>();
+// ЛР 6, advanced variant - tamper-evident журнал security-подій, ключі лише поза Git
+// Читається з IConfiguration контейнера, щоб перевизначення test host і змінні середовища діяли
+builder.Services.AddSingleton(services => services.GetRequiredService<IConfiguration>()
+    .GetSection("AuditLog").Get<AuditLogOptions>() ?? new AuditLogOptions());
+builder.Services.AddScoped<SecurityAuditLog>();
 // ЛР 4 - без реєстрації AuthorizeAsync відмовлятиме всім
 builder.Services.AddScoped<IAuthorizationHandler, IncidentAuthorizationHandler>();
 
@@ -40,7 +46,7 @@ builder.Services.AddAntiforgery(options =>
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
-    options.OnRejected = (context, _) =>
+    options.OnRejected = async (context, cancellationToken) =>
     {
         // Подія без імені користувача, пароля й тіла запиту
         // ЛР 6 - тип події за маршрутом, щоб відмова search не записувалась як login
@@ -50,7 +56,20 @@ builder.Services.AddRateLimiter(options =>
             .LogWarning(isSearch ? "Rate limit event {EventType}: result {Result}, trace {TraceId}"
                     : "Auth event {EventType}: result {Result}, trace {TraceId}",
                 isSearch ? "search" : "login", "rate-limited", context.HttpContext.TraceIdentifier);
-        return ValueTask.CompletedTask;
+        // ЛР 6, advanced variant - перевищення ліміту в журнал аудиту, відповідь лишається 429
+        try
+        {
+            await context.HttpContext.RequestServices.GetRequiredService<SecurityAuditLog>().AppendAsync(
+                context.HttpContext,
+                new AuditEntry(isSearch ? "search" : "login", "rate-limited",
+                    SecurityAuditLog.SubjectOf(context.HttpContext.User)),
+                cancellationToken);
+        }
+        catch (AuditUnavailableException)
+        {
+            context.HttpContext.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("SecureLab.RateLimit")
+                .LogError("Audit append failed for rate-limited, trace {TraceId}", context.HttpContext.TraceIdentifier);
+        }
     };
     // ЛР 6 - search, ключ лише з verified principal, анонім сюди не доходить (UseAuthorization раніше)
     options.AddPolicy("search", httpContext =>
@@ -104,6 +123,20 @@ await DatabaseBootstrap.InitializeAsync(app.Services, app.Configuration, app.Env
 if (resetRequested)
 {
     return;
+}
+
+// ЛР 6, advanced variant - перевірка й експорт журналу аудиту лише з командного рядка
+var auditCommand = AuditCli.Parse(args);
+if (auditCommand is not null)
+{
+    Environment.ExitCode = await AuditCli.RunAsync(app.Services, auditCommand);
+    return;
+}
+
+if (string.IsNullOrEmpty(app.Services.GetRequiredService<AuditLogOptions>().Keys.GetValueOrDefault(
+        app.Services.GetRequiredService<AuditLogOptions>().KeyId)))
+{
+    app.Logger.LogWarning("AuditLog key is not configured: login, logout and triage will return 503 until AuditLog__Keys__<id> is set");
 }
 
 app.UseExceptionHandler();

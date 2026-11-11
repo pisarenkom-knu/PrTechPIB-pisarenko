@@ -11,6 +11,7 @@ public sealed class SecureLabDbContext(DbContextOptions<SecureLabDbContext> opti
     public DbSet<Incident> Incidents => Set<Incident>();
     public DbSet<IncidentComment> IncidentComments => Set<IncidentComment>();
     public DbSet<IncidentStatusHistory> IncidentStatusHistory => Set<IncidentStatusHistory>();
+    public DbSet<SecurityAuditEvent> SecurityAuditEvents => Set<SecurityAuditEvent>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -84,5 +85,21 @@ public sealed class SecureLabDbContext(DbContextOptions<SecureLabDbContext> opti
             .WithMany()
             .HasForeignKey(item => item.ChangedByUserId)
             .OnDelete(DeleteBehavior.Restrict);
+
+        // ЛР 6, advanced variant - append-only за конвенцією, цілісність перевіряє HMAC-ланцюжок
+        var audit = modelBuilder.Entity<SecurityAuditEvent>();
+        audit.ToTable("security_audit_events");
+        audit.HasKey(item => item.Sequence);
+        audit.Property(item => item.Sequence).HasColumnName("sequence").ValueGeneratedNever();
+        audit.Property(item => item.OccurredAtUtc).HasColumnName("occurred_at_utc");
+        audit.Property(item => item.EventType).HasColumnName("event_type").HasMaxLength(64);
+        audit.Property(item => item.Result).HasColumnName("result").HasMaxLength(32);
+        audit.Property(item => item.SubjectId).HasColumnName("subject_id").HasMaxLength(64);
+        audit.Property(item => item.ResourceId).HasColumnName("resource_id").HasMaxLength(64);
+        audit.Property(item => item.LoginHash).HasColumnName("login_hash").HasMaxLength(32);
+        audit.Property(item => item.TraceId).HasColumnName("trace_id").HasMaxLength(64);
+        audit.Property(item => item.KeyId).HasColumnName("key_id").HasMaxLength(16);
+        audit.Property(item => item.PreviousHmac).HasColumnName("previous_hmac").HasMaxLength(64);
+        audit.Property(item => item.Hmac).HasColumnName("hmac").HasMaxLength(64);
     }
 }

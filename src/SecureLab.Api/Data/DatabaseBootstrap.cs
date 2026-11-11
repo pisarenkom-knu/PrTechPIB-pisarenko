@@ -31,10 +31,13 @@ public static class DatabaseBootstrap
             // The table names are fixed by the model and never assembled from input.
             // CASCADE clears only the explicitly selected local study schema.
             await dbContext.Database.ExecuteSqlRawAsync(
-                "TRUNCATE TABLE incident_comments, incident_status_history, incidents, "
+                "TRUNCATE TABLE security_audit_events, incident_comments, incident_status_history, incidents, "
                 + "identity_user_tokens, identity_user_roles, identity_user_logins, "
                 + "identity_user_claims, identity_role_claims, identity_users, identity_roles "
                 + "RESTART IDENTITY CASCADE;");
+            // ЛР 6 - журнал аудиту очищено разом з даними, тому якір теж починається з нуля
+            new SecureLab.Api.Application.Audit.AuditAnchorStore(
+                scope.ServiceProvider.GetRequiredService<SecureLab.Api.Application.Audit.AuditLogOptions>().ResolveAnchorPath()).Delete();
             await DbSeeder.SeedAsync(dbContext, userManager, roleManager, configuration);
         await SecureLab.Api.Scaffolding.Lab02Seed.EnsureAsync(services);
             Console.WriteLine("Локальні навчальні дані очищено та повторно заповнено seed-значеннями.");
