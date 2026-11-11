@@ -8,15 +8,35 @@
 
 ## 2. Scope та exclusions
 
-Поточні відстежувані Git файли — обов’язково. Історія Git: лише фактично переглянуті файли, refs або проміжок дат; інакше напишіть «не перевірено».
+**У межах огляду.** Baseline 2-A, ресурс Incident. ASP.NET Core API `src/SecureLab.Api` (маршрути, middleware, Identity cookie, antiforgery, rate limiting, error handling, журнали консолі), браузерний клієнт `src/SecureLab.Api/Client` (`index.html`, `auth-lab.html`, `browser-lab.html`), PostgreSQL у `infra/compose.yaml`, конфігурація `appsettings*.json`, `launchSettings.json`, `.gitignore`, `infra/.env.example`, NuGet-залежності за `packages.lock.json`, тести `tests/SecureLab.Api.Tests`, `tests/browser`, `tests/http`. Профілі Development (`http`) і production-like (`--no-launch-profile`, Production). Клієнти curl, Google Chrome (окреме вікно), xUnit test host.
+
+**Git.** Усі 434 поточні tracked files на `1ba23a3` для пошуку секретів (п. 9.3). Історія переглянута лише для `appsettings.Development.json`, `appsettings.json`, `infra/compose.yaml`, `infra/.env.example` (п. 9.1) і нових тестових файлів ЛР 6. Решта історії, stash, інші клони й зовнішні CI не перевірено.
+
+**Виключення.** Немає production host, TLS termination і HSTS response, тому транспорт перевірено лише як конфігурацію (п. 8.4). Зовнішній penetration test, автоматичний secret scanner і DAST не виконувались. Мініпроєкти `lr06-resources/examples`, Docker Desktop і ОС розробника поза межами. Redis не використовується, бо погоджений advanced variant інший.
 
 ## 3. System overview і trust boundaries
 
-Для всіх: див. threat-model.md. Добрий/відмінний: кожна межа → конкретний test; відмінний: asset → threat → control → verification.
+Компоненти, суб’єкти, entry points і схему меж довіри наведено в `docs/threat-model.md`. Кожна межа там пов’язана з конкретним тестом або перевіркою (таблиця «Очікувані властивості на межах»).
+
+**Зв’язок asset → threat → control → verification.** Retest повторює інша людина з reset (`dotnet run --project src/SecureLab.Api -- --reset-database`, пароль seed у `SeedUsers__Password`) і вказаних даних.
+
+| Актив | Загроза | Control | Перевірка й retest |
+|---|---|---|---|
+| Привілейований перехід New -> Triaged, право змінювати лише власні інциденти | стороння сторінка в тому самому браузері надсилає змінювальний запит з автоматичною cookie (CSRF, F-02) | antiforgery `X-CSRF-TOKEN` + `securelab-af`, `AntiforgeryValidationFilter` на SC-01...SC-05 до будь-якої зміни | REG-CSRF-01: Alice, власний інцидент, PUT без token 400 і незмінний опис, з token 204 і новий опис. `dotnet test SecureLab.sln -c Release --filter "FullyQualifiedName~Lab06Csrf"`. Ручно: Morgan, інцидент `20000000-...-0005`, сторінка `http://localhost:4175`, triage 400 і статус New (розділ 8.3) |
+| Чужі інциденти й коментарі (конфіденційність) | Reporter читає або змінює чужий ресурс за id (IDOR) | resource-based authorization `IncidentAuthorizationHandler`, 404 для чужого й неіснуючого, 403 для дозволеного читання без права дії | ЛР 4 A-03, A-04, A-06, A-10, A-11, A-12: `dotnet test ... --filter "FullyQualifiedName~Lab04"`, Alice проти `20000000-...-0002` Bob |
+| Сеанс користувача й облікові дані | перебір паролів, фіксація чи викрадення cookie, розкриття існування акаунта | Identity PBKDF2, cookie `HttpOnly`, `SameSite=Lax`, `Secure` у Production, login limiter 5 за 60 с за IP, однаковий 401 і 429 | ЛР 3 A-06, A-07, Rate limit: `Lab03SecurityTests`, `Lab03RateLimitTests`, ручно `lr06-s2-18`, прапорці cookie `lr06-s4-01` |
+| Цілісність відображення й дані сеансу в браузері | збережений XSS через опис чи коментар | `textContent` у `renderText`, CSP `script-src 'self'` без inline, `nosniff` | REG-XSS-01: Alice у Chrome на `/browser-lab.html`, запис з marker `lab05-marker.txt`, `tests/browser/description-dom.js` у Console, PASS 11 з 11 (`lr06-s3-05`) |
+| Дані інцидентів у відповіді іншому origin | сторінка іншого origin читає відповідь API з cookie | CORS лише Development, точний origin 4173, `AllowCredentials` без wildcard, у Production policy немає | REG-CORS-01: probes 4173 і 4174 у Chrome, curl з `Origin` (розділ 8.2) |
+| Структура SQL-запиту пошуку | SQLi через `q` або `sortBy` | EF Core параметри, `EscapeLike`, allowlist `sortBy` | ЛР 2 S-02, T-04, T-05: `SearchMechanicsTests` |
+| Доступність пошуку | автоматичний перебір `q` одним користувачем | search limiter 20 за 60 с на user id (REG-RL-01) | `Lab06SearchRateLimitTests`, ручно `lr06-s2-17` |
+| Внутрішня діагностика (stack trace, SQL, connection string) | розкриття деталей у відповіді на помилку | `AddProblemDetails` + `UseExceptionHandler`, `Include Error Detail=false`, browser headers через `OnStarting` (F-01) | Production з БД 54399: 500 без деталей, той самий TraceId у журналі, headers присутні (`lr06-s2-02`, `F01_UnexpectedError_KeepsSecurityHeaders`) |
+| Паролі, cookie й токени в журналах | витік credentials через log sink | structured logging без імені з форми, без тіла, `EnableSensitiveDataLogging` вимкнено | шість сценаріїв п. 9.4, `grep -c` по `../lr06-logs/api.log` усюди 0 |
+| Секрети конфігурації | реальний credential у tracked files | `.gitignore` для `.env` і `appsettings.Local.json`, `ConnectionStrings__SecureLab` поза Git | `git grep` п. 9.1 і 9.3, 0 реальних credential |
+| Правдивість error contract | 404 маскує наявний маршрут і хибно описує стан ресурсу (F-03) | `ApiFallback.Handle`: 405 з `Allow`, 415, 404 лише для невідомого шляху | `Lab06ApiFallbackTests` 11 з 11, ручно `lr06-f03-02` |
 
 ## 4. Methodology та test environment
 
-Відомий початковий стан, яка саме локальна БД, хеші початку й кінця, профіль запуску, конкретний клієнт і сеанс, команди та їхні коди завершення.
+Локальна БД PostgreSQL 18 у контейнері `secure-lab-postgres-1` (`127.0.0.1:54329`, БД `securelab`), відомий стан відновлюється `dotnet run --project src/SecureLab.Api -- --reset-database` у Development з `SeedUsers__Password` поза Git (пароль зберігався у `~/.securelab-seed` з правами 600 і читався `source`, у команди й докази не потрапляв). Hash початку `220b9b3`, гілка `lab/6-hardening-review`, hash кінця й тег додаються після фінального прогону на merge commit. Профілі: Development (`http`, `http://localhost:5080`) і Production (`production.sh normal` або `broken`, `--no-launch-profile`, `-c Release`). Клієнти: curl 8 з cookie jar поза репозиторієм, Google Chrome в окремому вікні з DevTools, xUnit test host (`SecureLabApiFactory`, Production-варіант через `WithWebHostBuilder`). Ручні сценарії в Terminal виконувались скриптом з виводом `$ команда` перед результатом, тому кожен знімок містить точну команду. Коди завершення наведено біля команд, де вони важливі (restore і audit 0, `grep -c` з 0 збігів).
 
 ### 4.1. Production-like profile і безпечна помилка (етап 1, п. 4-5)
 
@@ -50,11 +70,23 @@
 
 ## 5. Findings summary
 
-Таблиця: ID / актив / вплив / ймовірність / пріоритет / статус / ID повторної перевірки.
+| ID | Актив | Вплив | Ймовірність і передумови | Пріоритет | Статус | ID повторної перевірки |
+|---|---|---|---|---|---|---|
+| F-02 | привілейований перехід статусу, власні інциденти, сеанс | несанкціонована зміна стану від імені Analyst чи власника, примусовий logout, середній для цілісності | висока: досить відкрити сторінку того самого site у браузері з активним сеансом, автентифікація зловмисника не потрібна, для triage потрібна жертва з роллю Analyst | P1 | Fixed | REG-CSRF-01, `F02_TriageAsSimpleFormPost_...`, `Perimeter_...`, ручний retest з 4175 |
+| F-01 | browser controls на відповідях помилки | низький: відповідь 500 без `nosniff`, `Referrer-Policy`, CSP і `frame-ancestors`, даних у ній немає | середня: потрібна необроблена помилка (недоступна БД або дефект коду), запит може надіслати будь-хто | P3 | Fixed | `F01_UnexpectedError_KeepsSecurityHeaders`, ручно `lr06-s2-02` |
+| F-03 | правдивість error contract | низький: наявний маршрут і ресурс видаються відсутніми, хибні висновки клієнта, моніторингу й огляду, без розкриття даних | висока: будь-який запит з іншим методом чи Content-Type, автентифікація не потрібна | P3 | Fixed | `Lab06ApiFallbackTests`, ручно `lr06-f03-02` |
+
+**Порядок дій і чому саме такий.** Першою виправлено F-02, бо лише вона дає зловмиснику змінити дані іншої людини. Передумова мінімальна (жертва відкриває сторінку), а захисту не було на жодному з п’яти змінювальних маршрутів, тож це єдина знахідка з реальним впливом на цілісність. F-01 і F-03 мають низький вплив без витоку даних, тому їх виправлено після F-02. Між ними F-01 пріоритетніша за класом control: вона вимикає вже налаштовані браузерні захисти саме на відповіді, яку зловмисник може спровокувати, тоді як F-03 стосується правдивості коду помилки. Обидві отримали P3, але F-01 виправлено раніше, бо вона виявилась ще на етапі 2 і її виправлення не залежало від периметра CSRF. Тимчасово прийнятих ризиків серед findings немає, усі три закрито зі retest. Відкриті ризики поза findings перелічено в розділі 10.
 
 ## 6. Detailed findings
 
-Щонайменше одна власна знахідка для достатнього рівня, дві виправлені — для доброго; три виправлені — для відмінного, з них третя поза прямим checklist; кожна в окремому файлі docs/findings/*.md.
+| ID | Картка | Джерело | Fixed у commit |
+|---|---|---|---|
+| F-01 | `docs/findings/F-01-error-path-security-headers.md` | етап 2, п. 1 (підказано методикою) | `fde58a5` |
+| F-02 | `docs/findings/F-02-csrf-cookie-mutations.md` | етап 2, п. 3-5, власне відтворення атаки triage простою формою | `27b5674` |
+| F-03 | `docs/findings/F-03-api-fallback-masks-405-415.md` | власний аналіз поза прямим checklist під час рішення щодо login і register | `c75995d` |
+
+Кожна картка містить передумови, відтворення, вплив і ймовірність, першопричину, виправлення, retest, positive regression, залишковий ризик і доказ без секретів.
 
 ## 7. Regression results
 
@@ -201,6 +233,22 @@ HTTPS шифрує канал і автентифікує сервер, redirect
 | login, автоматично | `Lab03RateLimitTests` (quota 3 за 2 с) | Passed |
 
 Тимчасові значення задавалися лише змінними процесу, tracked `appsettings*.json` не змінено. Для інших тестів `SecureLabApiFactory` піднімає обидві quota до 1000, бо всі клієнти test host мають спільний `RemoteIpAddress=null`.
+
+### 8.6. Змістові відмінності Development і Production (етап 4, п. 4)
+
+Однакові запити на двох запусках одного commit (`lr06-s4-01-dev-vs-production.png`), значення cookie приховано.
+
+| Властивість | Development (`dotnet run --project src/SecureLab.Api`) | Production (`production.sh normal`) | Причина в коді чи конфігурації |
+|---|---|---|---|
+| `GET /openapi/v1.json` | 200 `application/json` | 404 `application/problem+json` | `MapOpenApi()` і `MapScalarApiReference()` лише в `IsDevelopment()` |
+| CORS для `Origin: http://localhost:4173` | є `Access-Control-Allow-Origin: http://localhost:4173` | заголовка немає | `AddCors` і `UseCors("Lab05BrowserProbe")` лише в Development |
+| `Set-Cookie` після login | `path=/; samesite=lax; httponly` | `path=/; secure; samesite=lax; httponly` | `CookieSecurePolicy.SameAsRequest` у Development, `Always` поза ним |
+| `--reset-database` | очищує й заповнює seed | процес завершується «Reset даних дозволено лише в явно налаштованому Development environment» | `Database:AllowReset` true лише в `appsettings.Development.json`, перевірка `IsDevelopment()` |
+| міграції під час старту | `ApplyMigrationsOnStartup=true` | `false` | `appsettings.json` проти `appsettings.Development.json` |
+| connection string | з `appsettings.Development.json` | лише з `ConnectionStrings__SecureLab` поза Git | у Production файл Development не читається |
+| CSP на `/scalar` | не додається (довідник має inline-ресурси) | шлях віддає fallback клієнта з повною CSP | виняток `isDevelopmentApiReference` у middleware |
+
+Спільними лишаються безпечна 500 (`AddProblemDetails` + `UseExceptionHandler`), antiforgery, rate limiting, авторизація й browser headers, тож різниця профілів не послаблює ці controls.
 
 ## 9. Dependency and secret audit
 
