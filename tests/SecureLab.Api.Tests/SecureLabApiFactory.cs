@@ -12,6 +12,11 @@ public sealed class SecureLabApiFactory : WebApplicationFactory<Program>
         // У test host усі клієнти мають RemoteIpAddress=null і спільний ключ ліміту.
         // Функціональні тести не мають ловити 429, ліміт перевіряє окремий host у Lab03RateLimitTests
         builder.ConfigureAppConfiguration(config => config.AddInMemoryCollection(
-            new Dictionary<string, string?> { ["LoginRateLimit:PermitLimit"] = "1000" }));
+            new Dictionary<string, string?>
+            {
+                ["LoginRateLimit:PermitLimit"] = "1000",
+                // ЛР 6 - search limiter перевіряє окремий host у Lab06SearchRateLimitTests
+                ["SearchRateLimit:PermitLimit"] = "1000"
+            }));
     }
 }

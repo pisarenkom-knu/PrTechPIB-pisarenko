@@ -55,7 +55,9 @@ public static class Lab02Endpoints
                     row.Severity.ToString(), row.Status.ToString(), row.CreatedAtUtc))
                 .ToListAsync(ct);
             return Results.Ok(rows);
-        }).RequireAuthorization();
+        }).RequireAuthorization()
+            // ЛР 6 - окремий лічильник на кожного автентифікованого користувача
+            .RequireRateLimiting("search");
         app.MapPost("/api/incidents", async (CreateIncidentRequest request, HttpContext httpContext, SecureLabDbContext db, CancellationToken ct) =>
         {
             // Власник лише з verified principal, ownerUserId із JSON у DTO немає

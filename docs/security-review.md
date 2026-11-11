@@ -148,6 +148,42 @@ Profile Development (`dotnet run --project src/SecureLab.Api`), бо policy `Lab
 | створення й читання | `browser-lab.html`, Bob | `POST incidents 201`, далі `GET: 200` | `lr06-s2-14` |
 | атака з іншого origin | `http://localhost:4175`, Morgan | `triage 400`, статус 0005 лишився `New` | `lr06-f02-05`, `lr06-f02-06` |
 
+### 8.4. HTTPS і HSTS як конфігурація (етап 2, п. 6)
+
+| Що перевірено | Фактичний стан | Висновок і межа |
+|---|---|---|
+| `Properties/launchSettings.json` | один profile `http`, `applicationUrl` `http://localhost:5080`, `ASPNETCORE_ENVIRONMENT=Development`. HTTPS profile немає | локальний стенд працює лише по HTTP |
+| `Program.cs` | `UseHttpsRedirection()` і `UseHsts()` відсутні. Reverse proxy чи іншої TLS-межі в репозиторії немає (`infra/compose.yaml` містить лише PostgreSQL) | baseline не дає фактичного доказу HTTPS, redirect чи HSTS |
+| Production-like запуск етапу 1 | `ASPNETCORE_URLS=http://localhost:5080`, cookie поза Development має `SecurePolicy.Always` | cookie позначається `Secure`, але сам транспорт лишається HTTP |
+
+HTTPS шифрує канал і автентифікує сервер, redirect лише переводить клієнта з HTTP на HTTPS (першу відповідь ще можна перехопити), HSTS наказує браузеру надалі звертатися до host тільки по HTTPS. `UseHsts()` за замовчуванням має `ExcludedHosts` `localhost`, `127.0.0.1`, `[::1]`, тому відсутність `Strict-Transport-Security` на loopback не є дефектом і не змінювалася. Локальну HSTS policy заради видимого header не додано. Реальний deployment, TLS termination і HSTS response на production host не тестувалися, це записано в залишкових ризиках.
+
+### 8.5. Rate limiting (етап 2, п. 7)
+
+`UseRateLimiter()` стоїть після `UseAuthentication()` і `UseAuthorization()`, тому limiter бачить verified principal, а анонім на захищеному маршруті одержує 401 раніше й не витрачає quota. Відмова 429 має Problem Details від `UseStatusCodePages()`. Обидва limiter in-memory, тобто лічильник окремий для кожного екземпляра API і скидається після перезапуску.
+
+| Policy | Маршрут | Partition key | Quota і window | Відмова й подія |
+|---|---|---|---|---|
+| `login` (з ЛР 3, збережено) | `POST /api/auth/login` | IP клієнта (`RemoteIpAddress`) | `LoginRateLimit:PermitLimit` 5 за `LoginRateLimit:WindowSeconds` 60 с, без черги | 429, `Auth event login: result rate-limited`, без імені й пароля |
+| `search` (нова, ЛР 6) | `GET /api/incidents/search` з параметром `q` | id автентифікованого користувача `user:{NameIdentifier}` з verified principal, не IP і не header від клієнта | `SearchRateLimit:PermitLimit` 20 за `SearchRateLimit:WindowSeconds` 60 с, без черги | 429, `Rate limit event search: result rate-limited` (до ЛР 6 будь-яка відмова записувалась як login) |
+
+Ключ search обрано за користувачем, бо маршрут доступний лише після входу, а IP може бути спільним для кількох людей (NAT, аудиторія). Значення 20 за хвилину покриває звичайний інтерактивний пошук і обмежує автоматичний перебір `q`.
+
+| Перевірка | Як | Фактичний результат |
+|---|---|---|
+| search, quota і 429 | Development із тимчасовим `SearchRateLimit__PermitLimit=3`, `SearchRateLimit__WindowSeconds=10` у змінних процесу, curl із сеансом Alice, `q=Перевірка USB` | `200, 200, 200, 429`, відповідь `application/problem+json` без даних (`lr06-s2-17`) |
+| search, другий partition | той самий запит від Bob одразу після 429 Alice | 200, 0 записів: власний лічильник і та сама авторизація, quota не відкриває чужий запис |
+| search, маршрут без policy | Alice `GET /api/incidents` під час 429 | 200 |
+| search, відновлення | `sleep 11`, повтор Alice | 200, 1 запис |
+| search, автоматично | `Lab06SearchRateLimitTests` (quota 3 за 2 с): quota, 429 Problem Details, Bob 0 записів, маршрут без policy, відновлення, подія search, анонім 5 разів 401 | Passed |
+| login, у межах limit | `LoginRateLimit__WindowSeconds=10`, 5 хибних спроб Alice | `401` x5 (`lr06-s2-18`) |
+| login, вичерпання | 6-та спроба, далі неіснуючий `nobody-x1` і знову Alice | 429 з однаковим тілом для існуючого й неіснуючого акаунта, існування не розкривається |
+| login, відновлення | `sleep 11`, коректний login Alice | 204 |
+| login, авторизація окремо | Alice після відновлення `GET /api/incidents/20000000-...-0002` (Bob) | 404, ліміт не замінює і не послаблює авторизацію |
+| login, автоматично | `Lab03RateLimitTests` (quota 3 за 2 с) | Passed |
+
+Тимчасові значення задавалися лише змінними процесу, tracked `appsettings*.json` не змінено. Для інших тестів `SecureLabApiFactory` піднімає обидві quota до 1000, бо всі клієнти test host мають спільний `RemoteIpAddress=null`.
+
 ## 9. Dependency and secret audit
 
 Для всіх рівнів: огляд поточної відстежуваної конфігурації й класифікація кожного збігу пошуку. Для доброго рівня додатково: таблиця рішень щодо залежностей, систематичний пошук у поточних відстежуваних файлах, повний огляд журналів і аудиту. Перевіряти всю історію не обов’язково — зазначте фактичні межі. Перевірки доброго рівня, які ви не виконували на достатньому, позначте «Не входить до обраного рівня», а не PASS.

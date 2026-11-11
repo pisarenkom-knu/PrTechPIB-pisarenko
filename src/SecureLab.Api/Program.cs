@@ -43,12 +43,29 @@ builder.Services.AddRateLimiter(options =>
     options.OnRejected = (context, _) =>
     {
         // Подія без імені користувача, пароля й тіла запиту
+        // ЛР 6 - тип події за маршрутом, щоб відмова search не записувалась як login
+        var isSearch = context.HttpContext.Request.Path.StartsWithSegments("/api/incidents/search");
         context.HttpContext.RequestServices.GetRequiredService<ILoggerFactory>()
-            .CreateLogger("SecureLab.AuthEvents")
-            .LogWarning("Auth event {EventType}: result {Result}, trace {TraceId}",
-                "login", "rate-limited", context.HttpContext.TraceIdentifier);
+            .CreateLogger(isSearch ? "SecureLab.RateLimit" : "SecureLab.AuthEvents")
+            .LogWarning(isSearch ? "Rate limit event {EventType}: result {Result}, trace {TraceId}"
+                    : "Auth event {EventType}: result {Result}, trace {TraceId}",
+                isSearch ? "search" : "login", "rate-limited", context.HttpContext.TraceIdentifier);
         return ValueTask.CompletedTask;
     };
+    // ЛР 6 - search, ключ лише з verified principal, анонім сюди не доходить (UseAuthorization раніше)
+    options.AddPolicy("search", httpContext =>
+    {
+        var config = httpContext.RequestServices.GetRequiredService<IConfiguration>();
+        var userId = httpContext.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+        return RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: userId is null ? "anonymous" : $"user:{userId}",
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = config.GetValue("SearchRateLimit:PermitLimit", 20),
+                Window = TimeSpan.FromSeconds(config.GetValue("SearchRateLimit:WindowSeconds", 60)),
+                QueueLimit = 0
+            });
+    });
     options.AddPolicy("login", httpContext =>
     {
         var config = httpContext.RequestServices.GetRequiredService<IConfiguration>();
