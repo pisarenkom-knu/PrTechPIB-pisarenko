@@ -42,6 +42,8 @@
 
 Зв’язок двох каналів: середній 32-символьний сегмент `traceId` у відповіді є тим самим `TraceId`, який console logger пише в scope запису `ExceptionHandlerMiddleware`. Обмеження доказу: збережена відповідь (`9474da18…8f15`) і збережений запис журналу (`02a14b2b…ead5`) належать двом послідовним запускам `production.sh broken` з однаковим сценарієм, тому на скріншотах ідентифікатори різні, а пари з одного запиту не збережено. Вивід другого запуску збережено поза репозиторієм у `../lr06-broken.log`, команда `grep -A2 "ExceptionHandlerMiddleware\[1\]" ../lr06-broken.log` показує запис, а `grep -ciE "NotARealPassword|unreachable-study-value|local-study-password" ../lr06-broken.log` дає 0, тобто ні пароль із запиту, ні пароль із connection string у журнал не потрапили.
 
+Пара з одного запиту збережена під час retest F-01 (етап 2, п. 1): в одному вікні запуск `production.sh broken` з журналом у `../lr06-broken-after-fix.log`, запит curl і `grep -A2 "ExceptionHandlerMiddleware\[1\]"`. Відповідь має `traceId` `00-761ad2a540e2e031d46b4b4054e2a0b5-1d6aeabddf27eb59-00`, запис журналу `TraceId:761ad2a540e2e031d46b4b4054e2a0b5`, `SpanId:1d6aeabddf27eb59`, `RequestPath:/api/auth/login`. Пошук паролів у цьому журналі теж дає 0.
+
 Спостереження: відповідь 500 не містить `X-Content-Type-Options`, `Referrer-Policy` і `Content-Security-Policy`, які є у відповіді 404 того самого запуску. Аналіз і виправлення у finding етапу 2, п. 1.
 
 **Відновлення.** Після помилки API зупинено, запущено звичайний Development (`dotnet run --project src/SecureLab.Api`), `/health` 200, вхід як `alice` (Reporter, `GET /api/me` 200), список показує 3 власні інциденти, `GET /api/incidents`, `severity-summary` і details відповідають 200.
@@ -63,6 +65,26 @@
 Для всіх: наявні controls; наявний login limiter — повторна перевірка (quota, 429, відновлення), відсутній — gap або виключення з причиною. Добрий/відмінний: наявні headers, CORS, search limiter (два partitions, quota, 429, відновлення). CSP, якої не було, — N/A на достатньому/доброму; для відмінного вона обов’язкова й не має ламати client. Добрий/відмінний: змістові відмінності Development/Production. Відмінний: погодження advanced variant до реалізації й фактична перевірка; Redis — shared state, TTL, partition isolation, failure mode.
 
 Зв’язок «control → ризик → фактична перевірка → межа»; у рядках про headers зазначте профіль, клієнт і status.
+
+### 8.1. Browser headers на п’яти класах відповідей (етап 2, п. 1)
+
+Заголовки виставляє inline middleware у `src/SecureLab.Api/Program.cs` одразу після `UseExceptionHandler()` і `UseStatusCodePages()`, до `UseRouting()`, отже має діяти на всіх відповідях конвеєра. Клієнт curl (`-D -`), сеанс Alice через `-c`/`-b` cookie jar поза репозиторієм, login дав 204. Стан після виправлення F-01, перевірено 2026-11-11.
+
+| Клас | Profile і client | Method + route | Status | Фактичні значення | Ризик | Межа |
+|---|---|---|---|---|---|---|
+| статична сторінка | Development, curl, anonymous | `GET /` | 200 `text/html` | `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, CSP `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'` | MIME sniffing, витік referrer, сторонні скрипти, clickjacking | не замінює правильний `Content-Type`, safe DOM і заборону секретів в URL |
+| успішний API | Development, curl, сеанс Alice | `GET /api/incidents/20000000-0000-0000-0000-000000000005` | 200 `application/json` | ті самі три заголовки | MIME sniffing JSON як HTML | не замінює авторизацію ресурсу (A-02) |
+| validation 4xx | Development, curl, сеанс Alice | `GET /api/incidents?status=Unknown` | 400 `application/problem+json`, `errors.status` | ті самі три заголовки | те саме | не замінює server-side validation |
+| unknown resource | Development, curl, сеанс Alice | `GET /api/incidents/99999999-9999-9999-9999-999999999999` | 404 `application/problem+json` «Інцидент не знайдено» | ті самі три заголовки | те саме | 404 для чужого й неіснуючого однаковий (`docs/access-matrix.md`) |
+| unexpected error | Production, `--no-launch-profile`, curl, anonymous | `POST /api/auth/login` з недосяжною БД | 500 `application/problem+json` | до виправлення заголовків не було (F-01), після виправлення ті самі три заголовки плюс `Cache-Control: no-cache,no-store` | те саме, на шляху помилки | заголовки не захищають від відповідей, які Kestrel формує до конвеєра |
+
+| Control | Що перевірено | Який ризик зменшує | Чого не замінює |
+|---|---|---|---|
+| Content-Security-Policy (з ЛР 5, enforcement, не Report-Only) | усі ресурси клієнта з власного origin, inline-коду немає, `connect-src 'self'`, клієнт працює (список, details, severity-summary 200 у Chrome на етапі 1) | частину наслідків injection і небажані джерела ресурсів | safe DOM, validation, authorization |
+| `X-Content-Type-Options: nosniff` | присутній на всіх п’яти класах | MIME sniffing у браузері | правильний `Content-Type` на сервері |
+| `Referrer-Policy: no-referrer` | присутній на всіх п’яти класах, клієнту referrer не потрібний | надмірний витік referrer | заборону секретів в URL |
+| `frame-ancestors 'none'` у CSP | присутній на всіх п’яти класах, вбудовування клієнта не потрібне | embedding і clickjacking | authorization |
+| виняток `/scalar` | лише в Development, у Production шлях віддає fallback клієнта з CSP | Scalar потребує власних inline-ресурсів | не діє поза Development |
 
 | ID    | Method + route | Джерело / розбіжність                        | Яка зміна стану | Cookie authentication | Browser-accessible | Antiforgery validation        | Regression ID |
 | ----- | -------------- | -------------------------------------------- | --------------- | --------------------- | ------------------ | ----------------------------- | ------------- |

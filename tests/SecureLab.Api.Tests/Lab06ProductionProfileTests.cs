@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.DependencyInjection;
@@ -58,5 +59,30 @@ public sealed class Lab06ProductionProfileTests(SecureLabApiFactory factory)
             Assert.DoesNotContain("SELECT", json, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain("Host=", json, StringComparison.Ordinal);
         }
+    }
+
+    // F-01 - контрольована 500 має ті самі security headers, що й звичайні відповіді
+    [Fact]
+    public async Task F01_UnexpectedError_KeepsSecurityHeaders()
+    {
+        // Недосяжна БД на 54399, як у production.sh broken
+        using var broken = factory.WithWebHostBuilder(builder =>
+        {
+            builder.UseEnvironment("Production");
+            builder.UseSetting("ConnectionStrings:SecureLab",
+                "Host=127.0.0.1;Port=54399;Database=securelab;Username=securelab;"
+                + "Password=unreachable-study-value;Include Error Detail=false;Timeout=2");
+        });
+        using var client = broken.CreateClient();
+
+        using var response = await client.PostAsJsonAsync("/api/auth/login",
+            new { userName = "alice", password = "NotARealPassword1!" });
+
+        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
+        Assert.Equal("application/problem+json", response.Content.Headers.ContentType?.MediaType);
+        Assert.Equal("nosniff", response.Headers.GetValues("X-Content-Type-Options").Single());
+        Assert.Equal("no-referrer", response.Headers.GetValues("Referrer-Policy").Single());
+        Assert.Contains("frame-ancestors 'none'",
+            response.Headers.GetValues("Content-Security-Policy").Single(), StringComparison.Ordinal);
     }
 }

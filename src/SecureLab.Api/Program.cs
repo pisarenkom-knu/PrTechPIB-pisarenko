@@ -89,15 +89,20 @@ const string csp = "default-src 'self'; script-src 'self'; style-src 'self'; img
 
 app.Use(async (context, next) =>
 {
-    context.Response.Headers.XContentTypeOptions = "nosniff";
-    context.Response.Headers.Append("Referrer-Policy", "no-referrer");
-    // Development-довідник Scalar має власні inline-ресурси, виняток лише для нього
-    var isDevelopmentApiReference = app.Environment.IsDevelopment()
-        && context.Request.Path.StartsWithSegments("/scalar");
-    if (!isDevelopmentApiReference)
+    // ЛР 6, F-01 - headers додаються перед надсиланням, бо exception handler очищає вже встановлені
+    context.Response.OnStarting(() =>
     {
-        context.Response.Headers["Content-Security-Policy"] = csp;
-    }
+        context.Response.Headers.XContentTypeOptions = "nosniff";
+        context.Response.Headers["Referrer-Policy"] = "no-referrer";
+        // Development-довідник Scalar має власні inline-ресурси, виняток лише для нього
+        var isDevelopmentApiReference = app.Environment.IsDevelopment()
+            && context.Request.Path.StartsWithSegments("/scalar");
+        if (!isDevelopmentApiReference)
+        {
+            context.Response.Headers["Content-Security-Policy"] = csp;
+        }
+        return Task.CompletedTask;
+    });
     await next(context);
 });
 
