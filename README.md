@@ -74,7 +74,42 @@ dotnet run --project src/SecureLab.Api -- --reset-database
 
 Команда навмисно відмовляється працювати поза явно налаштованим Development
 environment. Вона знищує поточні локальні навчальні дані у відомих таблицях
-БД `securelab`, але не видаляє саму БД або її схему.
+БД `securelab`, але не видаляє саму БД або її схему. З ЛР 6 reset також очищує
+журнал аудиту `security_audit_events` і видаляє його файл-якір.
+
+### Налаштування поза Git з ЛР 6
+
+Login, logout і triage записують подію в журнал аудиту й без ключа повертають
+503 (fail-closed). Ключі генеруються локально й зберігаються лише поза
+репозиторієм, наприклад у файлі з правами 600:
+
+```bash
+read -rs 'P?Seed password: '; printf 'export SeedUsers__Password=%q\n' "$P" > ~/.securelab-seed; unset P; echo
+```
+
+```bash
+printf 'export AuditLog__KeyId=k1\nexport AuditLog__Keys__k1=%s\nexport AuditLog__LoginHashKey=%s\n' "$(openssl rand -base64 32)" "$(openssl rand -base64 32)" >> ~/.securelab-seed; chmod 600 ~/.securelab-seed
+```
+
+```bash
+source ~/.securelab-seed
+```
+
+Файл-якір за замовчуванням лежить у `~/Library/Application Support/SecureLab/audit-anchor.json`
+(macOS), інший шлях задає `AuditLog__AnchorPath`. Перевірка й експорт журналу
+лише з командного рядка, шлях до файлу абсолютний, бо `dotnet run` працює з теки проєкту:
+
+```bash
+dotnet run --project src/SecureLab.Api -- --verify-audit
+```
+
+```bash
+dotnet run --project src/SecureLab.Api -- --export-audit "$(cd .. && pwd)/lr06-audit/clean.jsonl"
+```
+
+Код завершення 0 означає цілий ланцюжок, 2 означає попередження (якір відстає на
+один запис), 1 означає порушення. Тести пишуть у ту саму локальну БД власним
+ключем `test`, тому перед ручною перевіркою CLI виконайте reset.
 
 ## 4. Перевірка
 
@@ -84,6 +119,21 @@ environment. Вона знищує поточні локальні навчал�
 dotnet build src/SecureLab.Api/SecureLab.Api.csproj --configuration Release
 dotnet test tests/SecureLab.Api.Tests/SecureLab.Api.Tests.csproj --configuration Release
 ```
+
+З ЛР 3 тестам потрібна `SeedUsers__Password` у тому самому терміналі. Регресія ЛР 6
+виконується на відомому стані після reset, API при цьому зупинено:
+
+```bash
+source ~/.securelab-seed
+dotnet run --project src/SecureLab.Api -- --reset-database
+dotnet test SecureLab.sln -c Release
+```
+
+Окремі набори ЛР 6: `--filter "FullyQualifiedName~Lab06Csrf"` (REG-CSRF-01 і
+периметр), `~Lab06AuditLog` (журнал аудиту), `~Lab06ApiFallback` (F-03),
+`~Lab06SearchRateLimit`, `~Lab06ProductionProfile`. Браузерна регресія
+REG-XSS-01 - `tests/browser/description-dom.js` у DevTools Console на
+`/browser-lab.html` після входу.
 
 На macOS/Linux або у Git Bash увесь сценарій підняття PostgreSQL і тестів
 виконує одна команда:
