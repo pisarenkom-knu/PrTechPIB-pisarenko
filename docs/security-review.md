@@ -273,6 +273,39 @@ dotnet package list --outdated
 
 Висновок: у поточних tracked files реального credential не знайдено. Шаблони є широким базовим пошуком засобами Git, а не повноцінним secret scanner, тому секрет іншого формату цей пошук міг пропустити.
 
+### 9.4. Діагностичні журнали й журнал аудиту (етап 3, п. 4)
+
+Діагностичний журнал потрібен розробнику, щоб знайти причину збою (рівень, категорія, trace, технічні деталі на сервері). Подія аудиту фіксує, хто що зробив з яким ресурсом і з яким результатом, і має бути зрозумілою без stack trace. У проєкті обидва канали пишуть у console logger зі scopes (`Logging:Console:IncludeScopes=true`), аудиторські категорії `SecureLab.AuthEvents` і `SecureLab.AuthorizationAudit`, а історія статусів зберігається в таблиці `incident_status_history`.
+
+Запуск, sink поза Git `../lr06-logs/api.log`: reset у Development, `dotnet run --project src/SecureLab.Api 2>&1 | tee ../lr06-logs/api.log`, сценарії curl із cookie jar поза репозиторієм, потім `bash ../lr06-resources/commands/production.sh broken 2>&1 | tee -a ../lr06-logs/api.log` і один login. Паролі в командах брались зі змінної середовища через `jq --arg`, токени лише у тимчасових файлах `../lr06-logs/*.tmp`, видалених після перевірки.
+
+| № | Сценарій | Request і результат | Запис у журналі або аудиті | Перевірені поля й чого немає |
+|---|---|---|---|---|
+| 1 | successful login | `POST /api/auth/login` alice, 204 | `SecureLab.AuthEvents`: `Auth event login: result success, user 10000000-...0001, trace 0HNQ06PG3UVS3:00000001` | є result, subject id, trace і час запису. Немає пароля, cookie, імені з форми |
+| 2 | failed login | alice з `NotARealPassword1!`, 401 | `warn: SecureLab.AuthEvents`: `Auth event login: result failure, trace 0HNQ06PG3UVS4:00000001` | немає пароля, імені з форми і ознаки, чи існує акаунт |
+| 3 | denied protected action | Alice (Reporter) з валідним `X-CSRF-TOKEN` `POST /api/incidents/...0003/triage`, 403 | `warn: SecureLab.AuthorizationAudit`: `authorization.denied subject=...0001 action=incident.triage resource=...0003 result=denied occurredAtUtc=... traceId=00-aeb30be5...` | subject, action, resource, result, time, trace. Немає токена, cookie, тіла, персональних даних чужого |
+| 4 | validation error | Alice `POST /api/incidents` з `title` з пробілів і `severity` 7, 400 Validation Problem Details | окремого запису немає (`Microsoft.AspNetCore` на рівні Warning), відповідь має `traceId` | у журналі немає тіла запиту. Межа: мінімальний діагностичний контекст лише в відповіді |
+| 5 | unexpected server error | Production, БД 54399, login, 500 з `traceId` `00-f222a01eec14b206ac2612ae3b82ea0a-...` | `fail: ExceptionHandlerMiddleware[1]` з `TraceId:f222a01eec14b206ac2612ae3b82ea0a`, `RequestPath:/api/auth/login`, stack trace лише в журналі | збіг TraceId. Немає пароля з запиту і пароля з connection string |
+| 6 | privileged transition | Morgan (Analyst) з валідним токеном triage `...0003`, 204 | рядок `incident_status_history`: `changed_by_user_id=...0003`, `old_status=New`, `new_status=Triaged`, `note=Triage`, `created_at_utc=2026-11-11 20:57:20` (запит `psql`). У журналі лише EF `INSERT INTO incident_status_history` з параметрами `@p0...`, значення замасковані | subject, action, resource, result (успішний перехід), time. Відмову Reporter для того самого переходу показує сценарій 3 |
+
+**Доказ відсутності чутливих даних (відмінний рівень).** Знімки `lr06-s3-03-log-sensitive-check.png`, `lr06-s3-04-log-cookie-pattern.png`, файл журналу 376 рядків, обидва запуски.
+
+| Команда | Збігів |
+|---|---|
+| `grep -c -F "$SeedUsers__Password" ../lr06-logs/api.log` (змінну перевірено як задану) | 0 |
+| `grep -c -F 'NotARealPassword1!' ../lr06-logs/api.log` | 0 |
+| `grep -c -i -E 'cookie:\|set-cookie' ../lr06-logs/api.log` | 0 |
+| `grep -c -i -E 'securelab-af\|\.AspNetCore\.Identity\.Application' ../lr06-logs/api.log` (назви cookie) | 0 |
+| `grep -c -i 'X-CSRF-TOKEN' ../lr06-logs/api.log` (назва antiforgery header) | 0 |
+| `grep -c -F -f ../lr06-logs/token-alice.tmp` і `token-morgan.tmp` (фактичні request token) | 0 і 0 |
+| `grep -c -E 'local-study-password\|unreachable-study-value\|Host=127' ../lr06-logs/api.log` (connection string) | 0 |
+
+Ширший власний шаблон з `\.AspNetCore\.Identity` спершу дав 2 збіги, але це рядки stack trace `Microsoft.AspNetCore.Identity.UserManager` і `SignInManager` сценарію 5, назва простору імен, а не значення cookie. Перевірка робилась на початковому файлі журналу, а не на очищеній копії. Межа висновку: лише ці шість сценаріїв і цей console sink. Після перевірки тимчасові токени видалено, журнал лежить лише поза репозиторієм.
+
+**Log injection.** Повідомлення будуються message template з параметрами (`{EventType}`, `{UserId}`), а не конкатенацією. Невдалий login не пише введене ім’я взагалі, audit відмови пише лише Guid з principal і маршруту, тому довільний текст користувача в ці записи не потрапляє. Пароль у SQL-журналі EF не видно, бо `EnableSensitiveDataLogging` вимкнено і параметри показано як `'?'`.
+
+**Gap для аудиту.** Успішний перехід статусу має audit trail лише в БД (`incident_status_history`), окремої аудиторської події в журналі немає, і ні журнал, ні таблиця не захищені від зміни тим, хто має доступ на запис. Це закриває погоджений advanced variant (tamper-evident журнал security-подій).
+
 ## 10. Residual risks
 
 Неперевірені й тимчасово прийняті ризики, відповідальний і наступна дія.
