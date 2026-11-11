@@ -166,9 +166,8 @@ app.MapAntiforgeryEndpoints();
 app.MapIncidentEndpoints();
 app.MapLab03Identity();
 app.MapLab02Endpoints();
-app.MapFallback("/api/{**path}", () => Results.Problem(
-    title: "Ресурс API не знайдено",
-    statusCode: StatusCodes.Status404NotFound));
+// ЛР 6, F-03 - 404 лише для невідомого шляху, для наявного маршруту 405 або 415
+app.MapFallback("/api/{**path}", ApiFallback.Handle);
 app.MapFallbackToFile("index.html");
 
 app.Run();
