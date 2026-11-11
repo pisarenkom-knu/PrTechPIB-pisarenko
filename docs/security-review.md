@@ -236,6 +236,43 @@ git grep -n -I -i -E 'password|passwd|secret|api.?key' -- .
 | tracked configuration  | немає реального credential, study-only values класифіковано | команди вище, 146 збігів у таблиці                        | не доводить відсутність в усій історії чи зовнішньому CI                                |
 | history у межах огляду | немає непогодженого secret-like value                       | `git log --all -p` для трьох файлів конфігурації          | охоплює лише ці файли, не охоплює форки, видалені refs, старі записи stash і чужі клони |
 
+### 9.2. Аудит залежностей (етап 3, п. 1-2)
+
+SDK 10.0.302 (`global.json` 10.0.100, `latestFeature`, `allowPrerelease: false`), 2026-11-11 22:55 EET, commit `1ba23a3`, `RestorePackagesWithLockFile=true` і `TreatWarningsAsErrors=true` у `Directory.Build.props`. Знімок `lr06-s3-01-dependency-audit.png`.
+
+```bash
+dotnet --version
+dotnet restore
+dotnet package list --vulnerable --include-transitive
+dotnet package list --outdated
+```
+
+`dotnet restore` завершився з кодом 0 без NU1901-NU1904. `dotnet package list --vulnerable --include-transitive` завершився з кодом 0: джерело `https://api.nuget.org/v3/index.json`, «The given project `SecureLab.Api` has no vulnerable packages given the current sources», те саме для `SecureLab.Api.Tests`. Межа висновку: лише відомі на цю дату advisories цього джерела для версій із `packages.lock.json`. Досяжність коду й невідомі вразливості не оцінювалися.
+
+| Package | Version | Direct / transitive | Advisory / severity | Чи використовується relevant functionality | Доступне оновлення | Рішення і причина |
+|---|---|---|---|---|---|---|
+| Microsoft.AspNetCore.Identity.EntityFrameworkCore, Microsoft.EntityFrameworkCore (+Design, Relational), Microsoft.AspNetCore.OpenApi | 10.0.10 | direct | немає | так, Identity, EF Core, OpenApi | 11.0.0 (major, .NET 11) | без оновлення: advisory немає, major змінює target framework, а політика курсу `net10.0` |
+| Npgsql.EntityFrameworkCore.PostgreSQL | 10.0.3 | direct | немає | так, доступ до PostgreSQL | у `--outdated` не показано | без змін |
+| Microsoft.OpenApi | 2.7.5 | direct | немає | так, документ OpenAPI лише в Development | 3.11.0 (major) | без оновлення: major змінює API, ризику немає |
+| Scalar.AspNetCore | 2.16.16 | direct | немає | так, довідник `/scalar` лише в Development | 2.20.0 (minor) | відкладено до окремого оновлення з повною регресією, бо компонент лише Development і advisory немає |
+| Тестові пакети (xunit 2.9.3, xunit.runner.visualstudio 3.1.4, Microsoft.NET.Test.Sdk 17.14.1, Microsoft.AspNetCore.Mvc.Testing 10.0.10, coverlet.collector 6.0.4) | див. ліворуч | direct, лише тести | немає | лише test host, у застосунок не потрапляють | major-версії | без оновлення, ризику для застосунку немає |
+| Транзитивні (Npgsql 10.0.3, Microsoft.CodeAnalysis.* 5.0.0, Newtonsoft.Json 13.0.3, Humanizer.Core 2.14.1 та інші) | з lockfile | transitive | немає | Npgsql у runtime, решта через `Microsoft.EntityFrameworkCore.Design` лише на етапі міграцій | не оцінювалось окремо | без змін, `dotnet nuget why` не знадобився, бо advisories немає |
+
+`NuGetAuditSuppress` і `WarningsNotAsErrors` не додавалися, бо придушувати нічого. Lockfile не змінювався.
+
+### 9.3. Систематичний пошук у tracked files (етап 3, п. 3)
+
+Межі: усі 434 поточні tracked files на commit `1ba23a3` при чистому робочому дереві (`git status --short` порожній). History, stash, інші клони й зовнішні CI систематично не перевірено, окрім історії конфігурації з п. 9.1. Знімок `lr06-s3-02-tracked-files-search.png`.
+
+| Пошук | Збігів | Review і рішення |
+|---|---|---|
+| `git grep -n -I -i -E 'password\|passwd\|secret\|api.?key' -- .` | 185 | ті самі категорії, що в п. 9.1 (146 збігів на review-start), плюс нові тести й docs ЛР 6: назви полів, `SeedUsers__Password` зі змінної середовища, випадкові `"Wrong-" + Guid`, документація. Не секрет |
+| `git grep -n -I -i -E 'token\|connection.?string\|private.?key\|BEGIN [A-Z ]*KEY\|bearer\|client.?secret\|access.?key\|signing.?key' -- .` | 184 | `CancellationToken` і `IsConcurrencyToken` у коді й міграціях, таблиця `identity_user_tokens`, `AddDefaultTokenProviders`, antiforgery-код (`X-CSRF-TOKEN`, `RequestToken`, `csrf.js`), `GetConnectionString` і `ConnectionStrings__SecureLab` як назви ключів, документація. Значень ключів, сертифікатів чи bearer-токенів немає |
+| `git grep -n -I -E '[A-Za-z0-9+/]{32,}={0,2}' -- . ':!*packages.lock.json'`, без URL | 59 | commit-хеші в `.scaffolds/*.json` і звітах, traceId у docs, шляхи файлів і довгі C#-ідентифікатори (`OperationAuthorizationRequirement`, `WebApplicationFactoryClientOptions`), рядки довжини в `tests/http/lab-02-checks.http`. Високоентропійних секретів немає |
+| `git grep -l -I -i 'local-study-password\|unreachable-study-value' -- .` | 6 файлів | три study-only входи з п. 9.1, README і review як документація, а також новий `tests/.../Lab06ProductionProfileTests.cs` (commits `a55bc15`, `fde58a5`): та сама відкрита навчальна БД на 127.0.0.1 і свідомо недосяжний порт 54399 з методики. Рішення accepted, study-only, межа та сама, що в п. 9.1 |
+
+Висновок: у поточних tracked files реального credential не знайдено. Шаблони є широким базовим пошуком засобами Git, а не повноцінним secret scanner, тому секрет іншого формату цей пошук міг пропустити.
+
 ## 10. Residual risks
 
 Неперевірені й тимчасово прийняті ризики, відповідальний і наступна дія.
