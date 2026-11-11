@@ -86,6 +86,23 @@
 | `frame-ancestors 'none'` у CSP | присутній на всіх п’яти класах, вбудовування клієнта не потрібне | embedding і clickjacking | authorization |
 | виняток `/scalar` | лише в Development, у Production шлях віддає fallback клієнта з CSP | Scalar потребує власних inline-ресурсів | не діє поза Development |
 
+### 8.2. CORS і профіль cookie, REG-CORS-01 (етап 2, п. 2)
+
+Profile Development (`dotnet run --project src/SecureLab.Api`), бо policy `Lab05BrowserProbe` реєструється лише в Development. Probes ЛР 5 `python3 -m http.server 4173|4174 --bind localhost --directory demonstrations/cors-probe`. Клієнт Google Chrome, окреме вікно, сеанс Alice (login через `auth-lab.html`), DevTools Network і Console. Probe робить `fetch("http://localhost:5080/api/incidents", { credentials: "include" })`. Policy в `Program.cs`: `WithOrigins("http://localhost:4173")`, `WithMethods("GET")`, `WithHeaders("X-Lab-Cors-Probe")`, `AllowCredentials()`, `UseCors` після `UseRouting` і до `UseAuthentication`.
+
+| Сценарій | Method + URL | Origin | Відповідь сервера | Що бачить JS сторінки | Висновок |
+|---|---|---|---|---|---|
+| дозволений origin, браузер | `GET http://localhost:5080/api/incidents` | `http://localhost:4173` | 200, `Access-Control-Allow-Origin: http://localhost:4173`, `Access-Control-Allow-Credentials: true`, ті самі security headers | `200: [{"id":"20000000-...0005", ...}]`, список Alice | allowlist і credentials працюють лише разом для точного origin |
+| недозволений origin, браузер | те саме | `http://localhost:4174` | 200 без жодного `Access-Control-*` | `fetch` кидає `TypeError`, сторінка показує «Браузер не надав response JavaScript». Network `CORS error`, Console `has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header`, `net::ERR_FAILED 200 (OK)` | браузер не віддає відповідь коду сторінки, але запит із cookie дійшов до API і виконався |
+| прямий HTTP, дозволений origin | `curl -H 'Origin: http://localhost:4173'` без cookie | 4173 | 401 з `Access-Control-Allow-Origin: http://localhost:4173` і `Allow-Credentials: true` | не застосовується | CORS стоїть до authentication, тож дозволений origin бачить навіть відмову 401 |
+| прямий HTTP, недозволений origin | `curl -H 'Origin: http://localhost:4174'` | 4174 | 401 без `Access-Control-*` | не застосовується | curl не застосовує CORS, сервер нічого не блокує, рішення лише в заголовках |
+| preflight змінювального методу | `OPTIONS`, `Access-Control-Request-Method: POST` | 4173 | 204, `Access-Control-Allow-Methods: GET` | браузер не надішле POST | cross-origin POST з JSON із 4173 браузер не дозволяє |
+| preflight дозволеного заголовка | `OPTIONS`, `Access-Control-Request-Method: GET`, `Access-Control-Request-Headers: X-Lab-Cors-Probe` | 4173 | 204, `Allow-Headers: X-Lab-Cors-Probe`, `Allow-Methods: GET` | GET з цим заголовком дозволено | policy відповідає реальному probe |
+
+**Межа висновку.** CORS вирішує лише, чи віддасть браузер cross-origin відповідь коду сторінки. Він не автентифікує, не авторизує і не зупиняє запит: з 4174 запит із cookie Alice дійшов до API (Network 200). Порти 4173, 4174 і 5080 на `localhost` є різними origins, але одним site, тому `SameSite=Lax` cookie надсилається з усіх трьох, і це не доказ поведінки SameSite між різними сайтами. Тому для змінювальних маршрутів потрібна окрема antiforgery-перевірка (п. 3-5). У Production policy не реєструється, cross-origin читання не дозволено жодному origin.
+
+**Профіль cookie.** `.AspNetCore.Identity.Application`: `HttpOnly`, `SameSite=Lax`, `Secure` поза Development (`CookieSecurePolicy.Always`), у Development `SameAsRequest`, бо стенд працює по HTTP (`Scaffolding/Lab03Identity.cs`). `HttpOnly` не дає скриптам сторінки читати cookie, але браузер сам додає її до запитів, тож захисту від CSRF вона не дає.
+
 | ID    | Method + route | Джерело / розбіжність                        | Яка зміна стану | Cookie authentication | Browser-accessible | Antiforgery validation        | Regression ID |
 | ----- | -------------- | -------------------------------------------- | --------------- | --------------------- | ------------------ | ----------------------------- | ------------- |
 | SC-01 | заповнити      | ЛР 2–5 / OpenAPI / client call / DISCREPANCY | заповнити       | так/ні                | так/ні             | explicit / automatic / absent | фактичний ID  |
