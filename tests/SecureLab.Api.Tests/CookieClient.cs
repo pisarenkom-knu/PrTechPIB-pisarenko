@@ -5,7 +5,8 @@ namespace SecureLab.Api.Tests;
 
 public static class CookieClient
 {
-    public static async Task<HttpClient> LoginAsync(this SecureLabApiFactory factory, string userName, string password)
+    // ЛР 6 - базовий тип, щоб входити і через похідний Production host
+    public static async Task<HttpClient> LoginAsync(this WebApplicationFactory<Program> factory, string userName, string password)
     {
         var client = factory.CreateClient(new WebApplicationFactoryClientOptions
         {
