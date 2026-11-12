@@ -73,6 +73,7 @@ public sealed class Lab03SecurityTests(SecureLabApiFactory factory)
     {
         var body = NewIncident("A04");
         using var bob = await factory.LoginAsync("bob", StudyPassword);
+        await bob.UseAntiforgeryTokenAsync();
 
         try
         {
@@ -101,6 +102,7 @@ public sealed class Lab03SecurityTests(SecureLabApiFactory factory)
             ownerUserId = DbSeeder.AliceId
         };
         using var bob = await factory.LoginAsync("bob", StudyPassword);
+        await bob.UseAntiforgeryTokenAsync();
 
         try
         {
@@ -120,6 +122,7 @@ public sealed class Lab03SecurityTests(SecureLabApiFactory factory)
     public async Task A06_Logout_ThenMe_Returns401()
     {
         using var alice = await factory.LoginAsync("alice", StudyPassword);
+        await alice.UseAntiforgeryTokenAsync();
         using var before = await alice.GetAsync("/api/me");
         Assert.Equal(HttpStatusCode.OK, before.StatusCode);
 

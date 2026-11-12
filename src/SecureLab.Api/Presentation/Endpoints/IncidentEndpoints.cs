@@ -3,6 +3,7 @@ using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Authorization.Infrastructure;
 using Microsoft.EntityFrameworkCore;
+using SecureLab.Api.Application.Audit;
 using SecureLab.Api.Application.Incidents;
 using SecureLab.Api.Data;
 using SecureLab.Api.Data.Entities;
@@ -17,7 +18,9 @@ public static class IncidentEndpoints
         // ЛР 4 - уся група лише для автентифікованого principal, анонім одержує 401
         var group = endpoints.MapGroup("/api/incidents")
             .WithTags("Incidents")
-            .RequireAuthorization();
+            .RequireAuthorization()
+            // ЛР 6 - відмови 403 і 404 на чужий ресурс потрапляють у журнал аудиту
+            .AddEndpointFilter<AuditDenialFilter>();
 
         group.MapGet("/", GetListAsync)
             .WithName("GetIncidents")
@@ -35,19 +38,24 @@ public static class IncidentEndpoints
             .ProducesValidationProblem();
 
         // ЛР 4 - рішення для ресурсу приймає IncidentAuthorizationHandler усередині endpoint
+        // ЛР 6 - кожна cookie-authenticated mutation вимагає валідну пару antiforgery-токенів
         group.MapPut("/{id:guid}", UpdateAsync)
-            .WithName("UpdateIncident");
+            .WithName("UpdateIncident")
+            .RequireAntiforgeryToken();
 
         group.MapDelete("/{id:guid}", DeleteAsync)
-            .WithName("DeleteIncident");
+            .WithName("DeleteIncident")
+            .RequireAntiforgeryToken();
 
         group.MapPost("/{id:guid}/triage", TriageAsync)
-            .WithName("TriageIncident");
+            .WithName("TriageIncident")
+            .RequireAntiforgeryToken();
 
         endpoints.MapGet("/api/incident-comments/{id:guid}", GetCommentAsync)
             .WithTags("Incidents")
             .WithName("GetIncidentComment")
-            .RequireAuthorization();
+            .RequireAuthorization()
+            .AddEndpointFilter<AuditDenialFilter>();
 
         return endpoints;
     }
@@ -77,7 +85,7 @@ public static class IncidentEndpoints
         var incident = await dbContext.Incidents
             .SingleOrDefaultAsync(item => item.Id == id, cancellationToken);
         var denied = await AuthorizeAsync(
-            httpContext.User, incident, IncidentOperations.Update, authorizationService);
+            httpContext, incident, IncidentOperations.Update, authorizationService);
         if (denied is not null)
             return denied;
 
@@ -100,7 +108,7 @@ public static class IncidentEndpoints
         var incident = await dbContext.Incidents
             .SingleOrDefaultAsync(item => item.Id == id, cancellationToken);
         var denied = await AuthorizeAsync(
-            httpContext.User, incident, IncidentOperations.Delete, authorizationService);
+            httpContext, incident, IncidentOperations.Delete, authorizationService);
         if (denied is not null)
             return denied;
 
@@ -116,6 +124,7 @@ public static class IncidentEndpoints
         IAuthorizationService authorizationService,
         ILoggerFactory loggerFactory,
         SecureLabDbContext dbContext,
+        SecurityAuditLog audit,
         CancellationToken cancellationToken)
     {
         if (!IncidentAccess.TryGetUserId(httpContext.User, out var userId))
@@ -124,7 +133,7 @@ public static class IncidentEndpoints
         var incident = await dbContext.Incidents
             .SingleOrDefaultAsync(item => item.Id == id, cancellationToken);
         var denied = await AuthorizeAsync(
-            httpContext.User, incident, IncidentOperations.Triage, authorizationService);
+            httpContext, incident, IncidentOperations.Triage, authorizationService);
         if (denied is not null)
         {
             // Рішення ухвалено всередині endpoint, тому подію можна записати
@@ -153,7 +162,16 @@ public static class IncidentEndpoints
             Note = "Triage",
             CreatedAtUtc = now
         });
-        await dbContext.SaveChangesAsync(cancellationToken);
+        // ЛР 6 - зміна статусу й подія аудиту в одній транзакції, без аудиту зміни немає (fail-closed)
+        try
+        {
+            await audit.AppendWithChangesAsync(dbContext, httpContext,
+                new AuditEntry("incident.triage", "success", userId.ToString(), incident.Id.ToString()), cancellationToken);
+        }
+        catch (AuditUnavailableException)
+        {
+            return AuditProblems.Unavailable();
+        }
         return Results.NoContent();
     }
 
@@ -176,7 +194,10 @@ public static class IncidentEndpoints
         var canRead = await authorizationService.AuthorizeAsync(
             httpContext.User, comment.Incident, IncidentOperations.Read);
         if (!canRead.Succeeded)
+        {
+            AuditDenialFilter.Mark(httpContext, "incident-comment.read", comment.Id, "hidden");
             return IncidentNotFound();
+        }
 
         // Internal comment для Reporter так само невидимий, як неіснуючий
         if (comment.IsInternal)
@@ -184,7 +205,10 @@ public static class IncidentEndpoints
             var canReadInternal = await authorizationService.AuthorizeAsync(
                 httpContext.User, comment.Incident, IncidentOperations.ReadInternalComments);
             if (!canReadInternal.Succeeded)
+            {
+                AuditDenialFilter.Mark(httpContext, "incident-comment.read-internal", comment.Id, "hidden");
                 return IncidentNotFound();
+            }
         }
 
         return Results.Ok(new IncidentCommentResponse(
@@ -193,7 +217,7 @@ public static class IncidentEndpoints
 
     // Порядок для mutation - невідомий або невидимий ресурс 404, видимий без права на дію 403
     private static async Task<IResult?> AuthorizeAsync(
-        ClaimsPrincipal user,
+        HttpContext httpContext,
         Incident? incident,
         OperationAuthorizationRequirement operation,
         IAuthorizationService authorizationService)
@@ -201,12 +225,20 @@ public static class IncidentEndpoints
         if (incident is null)
             return IncidentNotFound();
 
+        var user = httpContext.User;
+        var action = "incident." + operation.Name.ToLowerInvariant();
         var canRead = await authorizationService.AuthorizeAsync(user, incident, IncidentOperations.Read);
         if (!canRead.Succeeded)
+        {
+            AuditDenialFilter.Mark(httpContext, action, incident.Id, "hidden");
             return IncidentNotFound();
+        }
 
         var canAct = await authorizationService.AuthorizeAsync(user, incident, operation);
-        return canAct.Succeeded ? null : Results.Forbid();
+        if (canAct.Succeeded)
+            return null;
+        AuditDenialFilter.Mark(httpContext, action, incident.Id, "forbidden");
+        return Results.Forbid();
     }
 
     // Audit без cookie, пароля і body, trace id той самий, що у traceId відповіді
@@ -266,7 +298,10 @@ public static class IncidentEndpoints
         var canRead = await authorizationService.AuthorizeAsync(
             httpContext.User, entity, IncidentOperations.Read);
         if (!canRead.Succeeded)
+        {
+            AuditDenialFilter.Mark(httpContext, "incident.read", entity.Id, "hidden");
             return IncidentNotFound();
+        }
 
         // Internal comment бачить лише роль, якій це дозволяє handler
         var canReadInternal = await authorizationService.AuthorizeAsync(

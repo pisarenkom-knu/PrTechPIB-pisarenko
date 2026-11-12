@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authorization;
 using SecureLab.Api.Scaffolding;
 using Microsoft.EntityFrameworkCore;
 using Scalar.AspNetCore;
+using SecureLab.Api.Application.Audit;
 using SecureLab.Api.Application.Incidents;
 using SecureLab.Api.Data;
 using SecureLab.Api.Presentation.Endpoints;
@@ -22,24 +23,68 @@ var connectionString = builder.Configuration.GetConnectionString("SecureLab")
 builder.Services.AddDbContext<SecureLabDbContext>(options =>
     options.UseNpgsql(connectionString));
 builder.Services.AddScoped<IncidentQueries>();
+// ЛР 6, advanced variant - tamper-evident журнал security-подій, ключі лише поза Git
+// Читається з IConfiguration контейнера, щоб перевизначення test host і змінні середовища діяли
+builder.Services.AddSingleton(services => services.GetRequiredService<IConfiguration>()
+    .GetSection("AuditLog").Get<AuditLogOptions>() ?? new AuditLogOptions());
+builder.Services.AddScoped<SecurityAuditLog>();
 // ЛР 4 - без реєстрації AuthorizeAsync відмовлятиме всім
 builder.Services.AddScoped<IAuthorizationHandler, IncidentAuthorizationHandler>();
 
 builder.AddLab03Identity();
 
+// ЛР 6 - antiforgery для cookie-сеансу, клієнт повертає request token у цьому header
+builder.Services.AddAntiforgery(options =>
+{
+    options.HeaderName = AntiforgeryEndpoints.HeaderName;
+    options.Cookie.Name = "securelab-af";
+    options.Cookie.HttpOnly = true;
+    options.Cookie.SameSite = SameSiteMode.Strict;
+});
+
 // Обмеження спроб входу - ключ за IP, за замовчуванням 5 запитів за 60 секунд
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
-    options.OnRejected = (context, _) =>
+    options.OnRejected = async (context, cancellationToken) =>
     {
         // Подія без імені користувача, пароля й тіла запиту
+        // ЛР 6 - тип події за маршрутом, щоб відмова search не записувалась як login
+        var isSearch = context.HttpContext.Request.Path.StartsWithSegments("/api/incidents/search");
         context.HttpContext.RequestServices.GetRequiredService<ILoggerFactory>()
-            .CreateLogger("SecureLab.AuthEvents")
-            .LogWarning("Auth event {EventType}: result {Result}, trace {TraceId}",
-                "login", "rate-limited", context.HttpContext.TraceIdentifier);
-        return ValueTask.CompletedTask;
+            .CreateLogger(isSearch ? "SecureLab.RateLimit" : "SecureLab.AuthEvents")
+            .LogWarning(isSearch ? "Rate limit event {EventType}: result {Result}, trace {TraceId}"
+                    : "Auth event {EventType}: result {Result}, trace {TraceId}",
+                isSearch ? "search" : "login", "rate-limited", context.HttpContext.TraceIdentifier);
+        // ЛР 6, advanced variant - перевищення ліміту в журнал аудиту, відповідь лишається 429
+        try
+        {
+            await context.HttpContext.RequestServices.GetRequiredService<SecurityAuditLog>().AppendAsync(
+                context.HttpContext,
+                new AuditEntry(isSearch ? "search" : "login", "rate-limited",
+                    SecurityAuditLog.SubjectOf(context.HttpContext.User)),
+                cancellationToken);
+        }
+        catch (AuditUnavailableException)
+        {
+            context.HttpContext.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("SecureLab.RateLimit")
+                .LogError("Audit append failed for rate-limited, trace {TraceId}", context.HttpContext.TraceIdentifier);
+        }
     };
+    // ЛР 6 - search, ключ лише з verified principal, анонім сюди не доходить (UseAuthorization раніше)
+    options.AddPolicy("search", httpContext =>
+    {
+        var config = httpContext.RequestServices.GetRequiredService<IConfiguration>();
+        var userId = httpContext.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+        return RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: userId is null ? "anonymous" : $"user:{userId}",
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = config.GetValue("SearchRateLimit:PermitLimit", 20),
+                Window = TimeSpan.FromSeconds(config.GetValue("SearchRateLimit:WindowSeconds", 60)),
+                QueueLimit = 0
+            });
+    });
     options.AddPolicy("login", httpContext =>
     {
         var config = httpContext.RequestServices.GetRequiredService<IConfiguration>();
@@ -80,6 +125,20 @@ if (resetRequested)
     return;
 }
 
+// ЛР 6, advanced variant - перевірка й експорт журналу аудиту лише з командного рядка
+var auditCommand = AuditCli.Parse(args);
+if (auditCommand is not null)
+{
+    Environment.ExitCode = await AuditCli.RunAsync(app.Services, auditCommand);
+    return;
+}
+
+if (string.IsNullOrEmpty(app.Services.GetRequiredService<AuditLogOptions>().Keys.GetValueOrDefault(
+        app.Services.GetRequiredService<AuditLogOptions>().KeyId)))
+{
+    app.Logger.LogWarning("AuditLog key is not configured: login, logout and triage will return 503 until AuditLog__Keys__<id> is set");
+}
+
 app.UseExceptionHandler();
 app.UseStatusCodePages();
 
@@ -89,15 +148,20 @@ const string csp = "default-src 'self'; script-src 'self'; style-src 'self'; img
 
 app.Use(async (context, next) =>
 {
-    context.Response.Headers.XContentTypeOptions = "nosniff";
-    context.Response.Headers.Append("Referrer-Policy", "no-referrer");
-    // Development-довідник Scalar має власні inline-ресурси, виняток лише для нього
-    var isDevelopmentApiReference = app.Environment.IsDevelopment()
-        && context.Request.Path.StartsWithSegments("/scalar");
-    if (!isDevelopmentApiReference)
+    // ЛР 6, F-01 - headers додаються перед надсиланням, бо exception handler очищає вже встановлені
+    context.Response.OnStarting(() =>
     {
-        context.Response.Headers["Content-Security-Policy"] = csp;
-    }
+        context.Response.Headers.XContentTypeOptions = "nosniff";
+        context.Response.Headers["Referrer-Policy"] = "no-referrer";
+        // Development-довідник Scalar має власні inline-ресурси, виняток лише для нього
+        var isDevelopmentApiReference = app.Environment.IsDevelopment()
+            && context.Request.Path.StartsWithSegments("/scalar");
+        if (!isDevelopmentApiReference)
+        {
+            context.Response.Headers["Content-Security-Policy"] = csp;
+        }
+        return Task.CompletedTask;
+    });
     await next(context);
 });
 
@@ -131,12 +195,12 @@ app.MapGet("/health", async (SecureLabDbContext dbContext, CancellationToken can
     .Produces(StatusCodes.Status200OK)
     .ProducesProblem(StatusCodes.Status503ServiceUnavailable);
 
+app.MapAntiforgeryEndpoints();
 app.MapIncidentEndpoints();
 app.MapLab03Identity();
 app.MapLab02Endpoints();
-app.MapFallback("/api/{**path}", () => Results.Problem(
-    title: "Ресурс API не знайдено",
-    statusCode: StatusCodes.Status404NotFound));
+// ЛР 6, F-03 - 404 лише для невідомого шляху, для наявного маршруту 405 або 415
+app.MapFallback("/api/{**path}", ApiFallback.Handle);
 app.MapFallbackToFile("index.html");
 
 app.Run();

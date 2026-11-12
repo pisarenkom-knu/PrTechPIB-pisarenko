@@ -1,7 +1,9 @@
 using System.Security.Claims;
 using Microsoft.AspNetCore.Identity;
+using SecureLab.Api.Application.Audit;
 using SecureLab.Api.Data;
 using SecureLab.Api.Data.Entities;
+using SecureLab.Api.Presentation.Endpoints;
 
 namespace SecureLab.Api.Scaffolding;
 
@@ -106,41 +108,80 @@ public static class Lab03Identity
             return Results.Created("/api/me", new RegistrationResponse(user.Id, userName, user.DisplayName));
         });
         app.MapPost("/api/auth/login", async (LoginInput input, SignInManager<ApplicationUser> signIn,
-            HttpContext httpContext, ILoggerFactory loggerFactory) =>
+            HttpContext httpContext, ILoggerFactory loggerFactory, SecurityAuditLog audit) =>
         {
             var events = loggerFactory.CreateLogger("SecureLab.AuthEvents");
             if (string.IsNullOrWhiteSpace(input.UserName) || string.IsNullOrEmpty(input.Password))
             {
                 LogLoginFailure(events, httpContext);
+                await AuditLoginFailureAsync(audit, httpContext, input.UserName, events);
                 return Results.Unauthorized();
             }
-            var result = await signIn.PasswordSignInAsync(input.UserName, input.Password, false, false);
+            // ЛР 6 - пароль перевіряється до видачі cookie, щоб без аудиту успіху сеанс не створювався
+            var user = await signIn.UserManager.FindByNameAsync(input.UserName);
+            var result = user is null ? SignInResult.Failed : await signIn.CheckPasswordSignInAsync(user, input.Password, false);
             if (!result.Succeeded)
             {
                 LogLoginFailure(events, httpContext);
+                await AuditLoginFailureAsync(audit, httpContext, input.UserName, events);
                 return Results.Unauthorized();
             }
+            try
+            {
+                await audit.AppendAsync(httpContext, new AuditEntry("login", "success", user!.Id.ToString()),
+                    httpContext.RequestAborted);
+            }
+            catch (AuditUnavailableException)
+            {
+                return AuditProblems.Unavailable();
+            }
+            await signIn.SignInAsync(user, isPersistent: false);
             // Успіх - лише id користувача, без імені з форми й пароля
-            var user = await signIn.UserManager.FindByNameAsync(input.UserName);
             events.LogInformation("Auth event {EventType}: result {Result}, user {UserId}, trace {TraceId}",
-                "login", "success", user?.Id, httpContext.TraceIdentifier);
+                "login", "success", user.Id, httpContext.TraceIdentifier);
             return Results.NoContent();
         }).RequireRateLimiting("login");
         // Стандартний sign-out Identity - сервер наказує браузеру видалити cookie
         app.MapPost("/api/auth/logout", async (SignInManager<ApplicationUser> signIn,
-            HttpContext httpContext, ILoggerFactory loggerFactory) =>
+            HttpContext httpContext, ILoggerFactory loggerFactory, SecurityAuditLog audit) =>
         {
             var userId = httpContext.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            // ЛР 6 - спершу подія аудиту, без неї сеанс не завершується (fail-closed)
+            try
+            {
+                await audit.AppendAsync(httpContext, new AuditEntry("logout", "success", userId), httpContext.RequestAborted);
+            }
+            catch (AuditUnavailableException)
+            {
+                return AuditProblems.Unavailable();
+            }
             await signIn.SignOutAsync();
             loggerFactory.CreateLogger("SecureLab.AuthEvents")
                 .LogInformation("Auth event {EventType}: result {Result}, user {UserId}, trace {TraceId}",
                     "logout", "success", userId ?? "anonymous", httpContext.TraceIdentifier);
             return Results.NoContent();
-        });
+        })
+            // ЛР 6 - фільтр перевіряє токен до SignOutAsync, чужий origin не завершить сеанс
+            .RequireAntiforgeryToken();
         // Профіль лише з verified principal, X-Demo-UserId більше не читається
         app.MapGet("/api/me", GetCurrentUser).RequireAuthorization();
         // Приклад лише mechanics: не повертає identity і не реалізує оцінювану operation.
         app.MapGet("/api/auth/session-check", () => Results.NoContent()).RequireAuthorization();
+    }
+
+    // ЛР 6 - невдалий вхід у журнал аудиту лише keyed-хешем нормалізованого логіна, відмова лишається 401
+    private static async Task AuditLoginFailureAsync(SecurityAuditLog audit, HttpContext httpContext,
+        string? userName, ILogger events)
+    {
+        try
+        {
+            await audit.AppendAsync(httpContext, new AuditEntry("login", "failure", LoginHash: audit.HashLogin(userName)),
+                httpContext.RequestAborted);
+        }
+        catch (AuditUnavailableException)
+        {
+            events.LogError("Audit append failed for login failure, trace {TraceId}", httpContext.TraceIdentifier);
+        }
     }
 
     // Невдалий вхід - без введеного імені, бо туди помилково вводять пароль

@@ -65,6 +65,8 @@ document.querySelector("#login").addEventListener("submit", async event => {
   const response = await postJson("/api/auth/login", data);
   delete data.password;
   result.textContent = `Login: ${response.status}`;
+  // ЛР 6 - новий principal, token попереднього сеансу не використовується
+  SecureLabCsrf.reset();
   await refreshState();
   if (response.ok) await loadProfile();
 });
@@ -82,7 +84,10 @@ document.querySelector("#create").addEventListener("submit", async event => {
     severity: data.severity,
     occurredAtUtc: new Date(data.occurredAt).toISOString()
   };
-  const response = await postJson("/api/incidents", body);
+  // ЛР 6 - mutation через helper з X-CSRF-TOKEN
+  const response = await SecureLabCsrf.mutate("/api/incidents", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body)
+  });
   if (response.status === 201) {
     const created = await response.json();
     result.textContent = `Створено: 201, ${created.title}, ${created.severity}, ${created.status}`;
@@ -98,7 +103,9 @@ document.querySelector("#create").addEventListener("submit", async event => {
 });
 
 document.querySelector("#logout").addEventListener("click", async () => {
-  const response = await apiFetch("/api/auth/logout", { method: "POST" });
+  const response = await SecureLabCsrf.mutate("/api/auth/logout", { method: "POST" });
+  // ЛР 6 - після logout token очищується, для наступного користувача буде новий
+  SecureLabCsrf.reset();
   clearProfile();
   await refreshState();
   // Повторна перевірка тим самим браузером - очищення UI не замінює sign-out

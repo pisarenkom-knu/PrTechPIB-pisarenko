@@ -51,7 +51,8 @@ await (async () => {
     document.querySelectorAll("#comments > p").length === commentData.comments.length);
 
   // Позитивний рядок - створюється новий запис з унікальною назвою, бо T-03 дає 409 на повтор
-  const created = await fetch("/api/incidents", {
+  // ЛР 6 - mutation через helper сторінки з X-CSRF-TOKEN, без нього API дає 400
+  const created = await SecureLabCsrf.mutate("/api/incidents", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ title: `DOM-тест ${Date.now()}`, description: positiveText,

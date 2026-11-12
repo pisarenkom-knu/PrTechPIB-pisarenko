@@ -1,0 +1,12 @@
+<!doctype html><html lang="uk"><meta charset="utf-8"><title>CSRF probe</title>
+<!-- ЛР 6 - навчальна сторінка іншого origin, лише localhost, лише seed-інцидент 0005 -->
+<h1>Навчальна сторінка іншого origin</h1>
+<p>Кнопка надсилає звичайну HTML-форму без тіла на API. Браузер сам додає cookie сеансу.</p>
+<form id="triage" method="post" action="http://localhost:5080/api/incidents/20000000-0000-0000-0000-000000000005/triage" target="sink">
+  <button>Надіслати triage для 0005</button>
+</form>
+<form id="logout" method="post" action="http://localhost:5080/api/auth/logout" target="sink">
+  <button>Надіслати logout</button>
+</form>
+<iframe name="sink" title="sink" hidden></iframe>
+</html>
