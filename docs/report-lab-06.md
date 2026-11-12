@@ -208,6 +208,7 @@ F-02 виправлено першою, бо лише вона дає зміни
 | копії журналу                  | clean PASS, modified `sequence 3: HMAC не збігається`, deleted `очікувався 3`, reordered `очікувався 2`, truncated `обрізання: якір має sequence 8, останній запис 7` | ![lr06-adv-02-verify-copies.png](evidence/lab-06/lr06-adv-02-verify-copies.png)       |
 | підробка в БД, якір, видалення | UPDATE роллю застосунку FAIL, після повернення PASS, якір позаду на один WARNING з exit 2, видалення останнього запису і всього журналу FAIL обрізання                | ![lr06-adv-03-db-tamper-anchor.png](evidence/lab-06/lr06-adv-03-db-tamper-anchor.png) |
 | fail-closed                    | без ключа правильний пароль 503 без `Set-Cookie`, хибний пароль 401, 0 подій                                                                                          | ![lr06-adv-04-fail-closed.png](evidence/lab-06/lr06-adv-04-fail-closed.png)           |
+| тести журналу аудиту           | `Lab06AuditLogTests` 16 з 16 після reset: усі види підробки, реальні події без секретів, паралельний запис, fail-closed                                               | ![lr06-adv-05-audit-tests.png](evidence/lab-06/lr06-adv-05-audit-tests.png)           |
 
 Тести `Lab06AuditLogTests` (16) перевіряють ті самі види підробки на рівні верифікатора, реальні події без секретів, паралельний запис 30 подій без пропусків і fail-closed.
 
